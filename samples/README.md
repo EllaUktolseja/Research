@@ -6,3 +6,4 @@ Folder ini menyimpan metadata dan referensi sampel untuk riset.
 - Arsip dan source yang sudah tersedia dicatat secara terpisah.
 - Jangan menjalankan sampel yang dicurigai berbahaya.
 - Analisis utama dilakukan secara statis.
+- Untuk mengelola secara otomatis jalankan script `manage_inventory.py`.

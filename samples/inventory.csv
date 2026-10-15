@@ -1,5 +1,5 @@
-id,name,source,reference_label,static_status,notes
-1,https://raw.githubusercontent.com/DataDog/malicious-software-packages-dataset/main/samples/npm/malicious_intent/000webhost-admin/999.9.9/2024-12-14-000webhost-admin-v999.9.9.zip,Datadog,malicious,not-started,-
+﻿id,name,source,reference_label,static_status,notes
+1,https://raw.githubusercontent.com/DataDog/malicious-software-packages-dataset/main/samples/npm/malicious_intent/000webhost-admin/999.9.9/2024-12-14-000webhost-admin-v999.9.9.zip,Datadog,malicious,in-progress,-
 2,https://raw.githubusercontent.com/DataDog/malicious-software-packages-dataset/main/samples/npm/malicious_intent/000webhost-analytics/999.9.9/2024-12-14-000webhost-analytics-v999.9.9.zqdl55-v22ip,Datadog,malicious,not-started,-
 3,https://raw.githubusercontent.com/DataDog/malicious-software-packages-dataset/main/samples/npm/malicious_intent/000webhost-api-client/999.9.9/2024-12-14-000webhost-api-client-v999.9.9.zip,Datadog,malicious,not-started,-
 4,https://raw.githubusercontent.com/DataDog/malicious-software-packages-dataset/main/samples/npm/malicious_intent/000webhost-api/999.9.9/2024-12-14-000webhost-api-v999.9.9.zip,Datadog,malicious_intentalicious,not-started,-
