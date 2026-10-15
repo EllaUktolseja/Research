@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import csv
 from pathlib import Path
 from typing import Any
 
@@ -168,31 +169,44 @@ def main() -> None:
         "--output",
         type=Path,
         default=None,
-        help="Output JSON path (default: results/<name>-<version>-features.json)",
+        help="Output CSV path (default: results/features.csv)",
     )
     args = parser.parse_args()
 
     package_dir = args.package_dir.expanduser().resolve()
     if not package_dir.is_dir():
         parser.error(f"package directory does not exist: {package_dir}")
+
     result = extract(
         package_dir, args.sbom.expanduser().resolve() if args.sbom else None
     )
-    output = (
-        args.output.expanduser()
-        if args.output
-        else Path.home()
-        / "malware-research"
-        / "results"
-        / f"{result['name']}-{result['version']}-features.json"
-    )
-    output = output.resolve()
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(
-        json.dumps(result, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
-    )
+
+    # Menentukan target output default ke folder 'results/features.csv'
+    if args.output:
+        output_csv = args.output.expanduser().resolve()
+    else:
+        # ROOT = 2 level ke atas dari posisi script ini (scripts/ -> root)
+        ROOT_DIR = Path(__file__).resolve().parent.parent
+        output_csv = ROOT_DIR / "results" / "features.csv"
+
+    output_csv.parent.mkdir(parents=True, exist_ok=True)
+
+    file_exists = output_csv.is_file()
+
+    # Pakai mode 'a' (append) agar fitur dari paket baru tertambah ke baris bawah CSV
+    with output_csv.open("a", encoding="utf-8-sig", newline="") as csvfile:
+        fieldnames = list(result.keys())
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+
+        # Kalau filenya belum ada, tulis headernya dulu
+        if not file_exists:
+            writer.writeheader()
+
+        # Tulis datanya
+        writer.writerow(result)
+
     print(json.dumps(result, indent=2, ensure_ascii=False))
-    print(f"\nSaved: {output}")
+    print(f"\n[OK] Fitur berhasil diekstrak dan disimpan ke: {output_csv}")
 
 
 if __name__ == "__main__":
