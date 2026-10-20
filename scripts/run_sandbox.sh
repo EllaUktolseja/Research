@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# Simpan sebagai: scripts/run_sandbox.sh
 set -e
 
 SAMPLE_ID=${1:-"1"}
@@ -8,15 +7,29 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOG_TEMP="$ROOT/logs/tetragon-node-control.jsonl"
 EBPF_DEST="$ROOT/results/ebpf/${SAMPLE_ID}.json"
 
-# Pastikan folder target ada
-mkdir -p "$ROOT/results/ebpf"
-mkdir -p "$ROOT/logs"
-
-# Hapus log temp bekas run sebelumnya biar gak tercampur
+mkdir -p "$ROOT/results/ebpf" "$ROOT/logs"
 rm -f "$LOG_TEMP"
 
+# 1. Cek folder sampel & cari posisi package.json
+SAMPLE_DIR="$ROOT/samples/source/$SAMPLE_ID"
+if [ ! -d "$SAMPLE_DIR" ]; then
+  echo "[ERROR] Folder $SAMPLE_DIR tidak ditemukan! Jalankan 'python scripts/manage_inventory.py --get $SAMPLE_ID' terlebih dahulu."
+  exit 1
+fi
+
+# Cari folder yang menyimpan package.json (bisa di root sampel atau di dalam subfolder/package)
+TARGET_DIR=$(find "$SAMPLE_DIR" -name "package.json" -exec dirname {} \; | head -n 1)
+
+if [ -z "$TARGET_DIR" ]; then
+  echo "[WARNING] Tidak ditemukan package.json di $SAMPLE_DIR, menggunakan root sampel."
+  TARGET_DIR="$SAMPLE_DIR"
+fi
+
 echo "[1/4] Starting Tetragon Sensor..."
-sudo docker run --name tetragon-sensor --rm -d \
+# Hapus container lama jika masih tersisa
+sudo docker rm -f tetragon-sensor 2>/dev/null || true
+
+sudo docker run --name tetragon-sensor -d \
   --privileged --pid=host --net=host \
   -v "$ROOT/tetragon/network_egress_host.yaml:/etc/tetragon/tetragon.tp.d/network_egress_host.yaml" \
   -v "$ROOT/logs:/var/log/tetragon" \
@@ -28,22 +41,31 @@ sudo docker run --name tetragon-sensor --rm -d \
 
 sleep 3
 
-echo "[2/4] Executing Sample ID $SAMPLE_ID..."
+# Cek apakah container Tetragon masih berjalan
+if ! sudo docker ps | grep -q tetragon-sensor; then
+  echo "[ERROR] Tetragon container crash saat startup! Berikut log error Tetragon:"
+  sudo docker logs tetragon-sensor || true
+  sudo docker rm -f tetragon-sensor 2>/dev/null || true
+  exit 1
+fi
+
+echo "[2/4] Executing Sample ID $SAMPLE_ID (Directory: $TARGET_DIR)..."
 sudo docker run --rm --net=host \
-  -v "$ROOT/samples/source/$SAMPLE_ID:/app" \
+  -v "$TARGET_DIR:/app" \
   -w /app \
   node:20-slim \
-  sh -c "npm install --ignore-scripts=false || node index.js" || true
+  sh -c "npm install --ignore-scripts=false || node index.js || node ." || true
 
 sleep 5
 
 echo "[3/4] Stopping Tetragon Sensor..."
-sudo docker stop tetragon-sensor
+sudo docker stop tetragon-sensor 2>/dev/null || true
+sudo docker rm -f tetragon-sensor 2>/dev/null || true
 
 echo "[4/4] Moving log to results/ebpf/${SAMPLE_ID}.json..."
 if [ -f "$LOG_TEMP" ]; then
   mv "$LOG_TEMP" "$EBPF_DEST"
-  echo "[OK] File eBPF log berhasil disimpan di: $EBPF_DEST"
+  echo "[OK] File eBPF log disimpan di: $EBPF_DEST"
 else
   echo "[ERROR] File log temporary tidak ditemukan!"
 fi
