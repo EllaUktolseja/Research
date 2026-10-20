@@ -11,7 +11,7 @@ def main():
     parser.add_argument(
         "--input",
         type=Path,
-        help="Path ke file input fitur (default: results/features.csv)",
+        help="Path ke file input fitur (default: results/combined_features.csv atau features.csv)",
     )
     parser.add_argument(
         "--output",
@@ -29,7 +29,15 @@ def main():
     ROOT = Path(__file__).resolve().parent.parent
     RESULTS_DIR = ROOT / "results"
 
-    INPUT = args.input.resolve() if args.input else RESULTS_DIR / "features.csv"
+    # Priority: combined_features.csv -> features.csv
+    if args.input:
+        INPUT = args.input.resolve()
+    else:
+        combined_file = RESULTS_DIR / "combined_features.csv"
+        INPUT = (
+            combined_file if combined_file.is_file() else RESULTS_DIR / "features.csv"
+        )
+
     OUTPUT = (
         args.output.resolve() if args.output else RESULTS_DIR / "features_model.csv"
     )
@@ -40,10 +48,11 @@ def main():
     )
 
     if not INPUT.is_file():
-        print(f"[ERROR] Dataset tidak ditemukan: {INPUT}")
+        print(f"[ERROR] Dataset tidak ditemukan di: {INPUT}")
         return
 
-    # Baca file input
+    print(f"[INFO] Memproses dataset dari: {INPUT.name}")
+
     with INPUT.open(newline="", encoding="utf-8-sig") as f:
         rows = list(csv.DictReader(f))
 
@@ -51,19 +60,19 @@ def main():
         print("[ERROR] Dataset kosong.")
         return
 
-    # Kumpulan kolom yang dianggap sebagai identitas (bukan fitur untuk dilatih)
+    # Kolom non-numerik / identitas yang dipisah ke metadata
     IDENTIFIERS = {
-        "id",  # Tambahan untuk handle sample_id kalau digabung dengan runtime
+        "id",
         "name",
         "version",
         "package_dir",
         "feature_file",
-        "log_file",  # Tambahan untuk handle log eBPF
+        "log_file",
+        "manifest_status",
+        "sbom_status",
     }
 
-    # Ambil kolom identitas yang memang benar-benar ada di data
     metadata_columns = [c for c in IDENTIFIERS if c in rows[0]]
-
     numeric_columns = []
     excluded = []
 
@@ -73,48 +82,40 @@ def main():
 
         values = [row.get(column, "").strip() for row in rows]
 
-        # Jangan memasukkan fitur dengan nilai kosong atau nilai non-numerik ke dataset model.
+        # Validasi angka
         try:
             numbers = [float(v) for v in values]
         except (ValueError, TypeError):
             excluded.append((column, "non-numeric/missing"))
             continue
 
-        # Kolom konstan (nilainya sama semua di setiap baris) tidak membantu membedakan sampel.
+        # Eliminasi kolom konstan (varian nilainya <= 1)
         if len(set(numbers)) <= 1:
             excluded.append((column, "constant"))
             continue
 
         numeric_columns.append(column)
 
-    # Buat direktori output jika belum ada
     OUTPUT.parent.mkdir(parents=True, exist_ok=True)
 
-    # Simpan dataset khusus numerik (buat di-load model)
+    # Simpan fitur numerik (X)
     with OUTPUT.open("w", newline="", encoding="utf-8-sig") as f:
         writer = csv.DictWriter(f, fieldnames=numeric_columns)
         writer.writeheader()
-        writer.writerows([{c: row[c] for c in numeric_columns} for row in rows])
+        writer.writerows([{c: row.get(c, 0) for c in numeric_columns} for row in rows])
 
-    # Simpan dataset metadata (buat ngelacak hasil prediksi nanti)
+    # Simpan metadata (y / identitas)
     with METADATA.open("w", newline="", encoding="utf-8-sig") as f:
         writer = csv.DictWriter(f, fieldnames=metadata_columns)
         writer.writeheader()
-        writer.writerows([{c: row[c] for c in metadata_columns} for row in rows])
+        writer.writerows(
+            [{c: row.get(c, "") for c in metadata_columns} for row in rows]
+        )
 
-    print("=== Persiapan Dataset Selesai ===")
+    print("\n=== Persiapan Dataset Selesai ===")
     print(f"Jumlah sampel             : {len(rows)}")
     print(f"Fitur numerik bervariasi  : {len(numeric_columns)}")
     print(f"Kolom dikecualikan        : {len(excluded)}")
-
-    print("\n[INFO] Fitur yang dipakai:")
-    for c in numeric_columns:
-        print(" -", c)
-
-    print("\n[INFO] Kolom yang dikecualikan:")
-    for c, reason in excluded:
-        print(f" - {c}: {reason}")
-
     print(f"\n[OK] Dataset model : {OUTPUT}")
     print(f"[OK] Metadata      : {METADATA}")
 
