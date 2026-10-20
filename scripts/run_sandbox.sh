@@ -17,7 +17,6 @@ if [ ! -d "$SAMPLE_DIR" ]; then
   exit 1
 fi
 
-# Cari folder yang menyimpan package.json (bisa di root sampel atau di dalam subfolder/package)
 TARGET_DIR=$(find "$SAMPLE_DIR" -name "package.json" -exec dirname {} \; | head -n 1)
 
 if [ -z "$TARGET_DIR" ]; then
@@ -26,9 +25,9 @@ if [ -z "$TARGET_DIR" ]; then
 fi
 
 echo "[1/4] Starting Tetragon Sensor..."
-# Hapus container lama jika masih tersisa
 sudo docker rm -f tetragon-sensor 2>/dev/null || true
 
+# Menggunakan flag --export-filename menggantikan --exported-stdout-file
 sudo docker run --name tetragon-sensor -d \
   --privileged --pid=host --net=host \
   -v "$ROOT/tetragon/network_egress_host.yaml:/etc/tetragon/tetragon.tp.d/network_egress_host.yaml" \
@@ -37,11 +36,10 @@ sudo docker run --name tetragon-sensor -d \
   -v /sys/fs/bpf:/sys/fs/bpf \
   -v /etc/os-release:/etc/os-release:ro \
   quay.io/cilium/tetragon:v1.2.0 \
-  tetragon --exported-stdout-file /var/log/tetragon/tetragon-node-control.jsonl
+  tetragon --export-filename /var/log/tetragon/tetragon-node-control.jsonl
 
 sleep 3
 
-# Cek apakah container Tetragon masih berjalan
 if ! sudo docker ps | grep -q tetragon-sensor; then
   echo "[ERROR] Tetragon container crash saat startup! Berikut log error Tetragon:"
   sudo docker logs tetragon-sensor || true
@@ -67,5 +65,5 @@ if [ -f "$LOG_TEMP" ]; then
   mv "$LOG_TEMP" "$EBPF_DEST"
   echo "[OK] File eBPF log disimpan di: $EBPF_DEST"
 else
-  echo "[ERROR] File log temporary tidak ditemukan!"
+  echo "[ERROR] File log temporary tidak ditemukan di $LOG_TEMP!"
 fi
