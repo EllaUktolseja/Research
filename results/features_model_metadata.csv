@@ -1,0 +1,6 @@
+﻿log_file,name,package_dir,sbom_status,manifest_status,version,id
+6.json,6,/home/aulia/malware-research/samples/source/6,components_detected,missing,unknown,6
+7.json,7,/home/aulia/malware-research/samples/source/7,0,missing,unknown,7
+8.json,8,/home/aulia/malware-research/samples/source/8,0,missing,unknown,8
+9.json,9,/home/aulia/malware-research/samples/source/9,0,missing,unknown,9
+10.json,10,/home/aulia/malware-research/samples/source/10,0,missing,unknown,10
