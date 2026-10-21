@@ -4,17 +4,15 @@ metadata:
   name: "monitor-outbound-network-calls"
 spec:
   kprobes:
-    - call: "sys_enter_connect"
-      syscall: true
+    - call: "tcp_connect"
+      syscall: false
       args:
         - index: 0
-          type: "int"
-        - index: 1
-          type: "sockaddr"
+          type: "sock"
       selectors:
         - matchArgs:
-            - index: 1
-              operator: "DnPort"
+            - index: 0
+              operator: "DPort"
               values:
                 - 80
                 - 443
