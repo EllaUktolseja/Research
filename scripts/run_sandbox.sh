@@ -47,9 +47,9 @@ sudo docker run --name tetragon-sensor -d \
   -v /etc/os-release:/etc/os-release:ro \
   quay.io/cilium/tetragon:v1.3.0 \
   tetragon \
-    --export-filename /var/log/tetragon/tetragon-node-control.jsonl \
-    --tracing-policy-dir /etc/tetragon/tetragon.tp.d/ \
-    --disable-kprobe-multi
+  --export-filename /var/log/tetragon/tetragon-node-control.jsonl \
+  --tracing-policy-dir /etc/tetragon/tetragon.tp.d/ \
+  --disable-kprobe-multi
 
 # ... (bagian bawah script tetap sama) ...
 # Berikan waktu bagi Tetragon untuk memuat program eBPF ke kernel
@@ -63,15 +63,33 @@ if ! sudo docker ps | grep -q tetragon-sensor; then
 fi
 
 echo "[2/4] Executing Sample ID $SAMPLE_ID (Directory: $TARGET_DIR)..."
-# Mengubah '||' menjadi '&&' agar node index.js tetap jalan setelah npm install sukses
+
+# 1. Jalankan Mock HTTP Server sederhana di background host (port 8080 & 80)
+# Ini menjaga agar request HTTP/TCP dari sampel mendapat respon HTTP 200 OK
+sudo docker run --name mock-sinkhole -d --net=host \
+  python:3-slim python3 -c '
+import http.server, socketserver
+class Handler(http.server.SimpleHTTPRequestHandler):
+    def do_GET(self): self.send_response(200); self.end_headers(); self.wfile.write(b"{}")
+    def do_POST(self): self.send_response(200); self.end_headers(); self.wfile.write(b"{}")
+with socketserver.TCPServer(("", 8080), Handler) as httpd:
+    httpd.serve_forever()
+' 2>/dev/null || true
+
+# 2. Jalankan sampel Node.js
+# Tambahkan timeout agar proses tidak menggantung jika sampel loop selamanya,
+# dan pastikan log eBPF sempat menangkap syscall sebelum kontainer mati
 sudo docker run --rm --net=host \
   -v "$TARGET_DIR:/app" \
   -w /app \
   node:20-slim \
-  sh -c "npm install --ignore-scripts=false && (node index.js || node .)" || true
+  sh -c "npm install --ignore-scripts=false && timeout 10s node index.js" || true
+
+# 3. Bersihkan mock server
+sudo docker rm -f mock-sinkhole 2>/dev/null || true
 
 # Berikan jeda waktu agar log event eBPF terakhir sempat ter-flush ke disk
-sleep 5
+sleep 10
 
 echo "[3/4] Stopping Tetragon Sensor..."
 sudo docker stop tetragon-sensor 2>/dev/null || true
@@ -84,4 +102,3 @@ if [ -f "$LOG_TEMP" ]; then
 else
   echo "[ERROR] File log temporary tidak ditemukan di $LOG_TEMP!"
 fi
-

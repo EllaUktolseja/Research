@@ -1,20 +1,22 @@
 apiVersion: cilium.io/v1alpha1
 kind: TracingPolicy
 metadata:
-  name: "monitor-network-activity-outside-cluster-cidr-range"
+  name: "monitor-outbound-network-calls"
 spec:
   kprobes:
-  - call: "tcp_connect"
-    syscall: false
-    args:
-    - index: 0
-      type: "sock"
-    selectors:
-    - matchArgs:
-      - index: 0
-        operator: "NotDAddr"
-        values:
-        - 127.0.0.1
-        - 127.0.0.1/32
-        - 127.0.0.1/32
-
+    - call: "sys_enter_connect"
+      syscall: true
+      args:
+        - index: 0
+          type: "int"
+        - index: 1
+          type: "sockaddr"
+      selectors:
+        - matchArgs:
+            - index: 1
+              operator: "DnPort"
+              values:
+                - 80
+                - 443
+                - 8080
+                - 3000
