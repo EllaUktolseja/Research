@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+"""Merge static and runtime features based on sample ID."""
+
 import argparse
 import csv
 from pathlib import Path
@@ -33,20 +35,18 @@ def main():
         print(f"[ERROR] File fitur runtime tidak ditemukan: {runtime_path}")
         return
 
-    # Baca data statis, jadikan dictionary dengan key = ID (diambil dari nama folder / path)
-    # Catatan: Karena extract_features.py sebelumnya menyimpan package_dir, kita bisa ekstrak ID dari foldernya
+    # Baca data statis
     static_data = {}
     with static_path.open(newline="", encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
-        static_fieldnames = reader.fieldnames or []
+        static_fieldnames = list(reader.fieldnames or [])
         for row in reader:
-            # Mengambil ID dari path folder, misal: .../samples/source/1 -> id = 1
-            pkg_dir = Path(row.get("package_dir", ""))
-            sample_id = pkg_dir.name if pkg_dir.name.isdigit() else row.get("name")
-
-            # Simpan ID eksplisit ke dalam row
-            row["id"] = sample_id
-            static_data[sample_id] = row
+            sample_id = row.get("id")
+            if not sample_id:
+                pkg_dir = Path(row.get("package_dir", ""))
+                sample_id = pkg_dir.name if pkg_dir.name.isdigit() else row.get("name", "")
+            row["id"] = str(sample_id)
+            static_data[str(sample_id)] = row
 
     if "id" not in static_fieldnames:
         static_fieldnames.insert(0, "id")
@@ -59,31 +59,36 @@ def main():
             col for col in (reader.fieldnames or []) if col != "sample_id"
         ]
         for row in reader:
-            sample_id = row.get("sample_id", "")
-            # Hapus sample_id dari row runtime karena sudah diwakili 'id' di statis
+            sample_id = str(row.get("sample_id", ""))
             if "sample_id" in row:
                 del row["sample_id"]
             runtime_data[sample_id] = row
 
-    # Gabungkan fieldnames
-    combined_fieldnames = static_fieldnames + runtime_fieldnames
+    # Gabungkan fieldnames (tanpa duplikat)
+    seen = set(static_fieldnames)
+    combined_fieldnames = list(static_fieldnames)
+    for col in runtime_fieldnames:
+        if col not in seen:
+            combined_fieldnames.append(col)
+            seen.add(col)
 
     # Lakukan proses Merge (Left Join: Statis sebagai acuan utama)
     combined_rows = []
-    for sample_id, s_row in static_data.items():
+    sorted_ids = sorted(static_data.keys(), key=lambda k: int(k) if k.isdigit() else k)
+
+    for sample_id in sorted_ids:
+        s_row = static_data[sample_id]
         r_row = runtime_data.get(sample_id, {})
 
-        # Gabungkan dictionary
         merged_row = {**s_row, **r_row}
 
-        # Isi nilai kosong untuk runtime jika log tidak tersedia (misal error pas eksekusi)
+        # Isi nilai default 0 untuk fitur numerik runtime jika log tidak tersedia
         for col in runtime_fieldnames:
-            if col not in merged_row:
-                merged_row[col] = "0"  # Default value untuk fitur dinamis yang kosong
+            if col not in merged_row or merged_row[col] == "" or merged_row[col] is None:
+                merged_row[col] = "0"
 
         combined_rows.append(merged_row)
 
-    # Tulis hasil gabungan
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("w", newline="", encoding="utf-8-sig") as f:
         writer = csv.DictWriter(f, fieldnames=combined_fieldnames)

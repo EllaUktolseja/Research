@@ -17,7 +17,7 @@ if [ ! -d "$SAMPLE_DIR" ]; then
   exit 1
 fi
 
-TARGET_DIR=$(find "$SAMPLE_DIR" -name "package.json" -exec dirname {} \; | head -n 1)
+TARGET_DIR=$(find "$SAMPLE_DIR" -name "package.json" -not -path '*/node_modules/*' -not -path '*/.git/*' -exec dirname {} \; | head -n 1)
 
 if [ -z "$TARGET_DIR" ]; then
   echo "[WARNING] Tidak ditemukan package.json di $SAMPLE_DIR, menggunakan root sampel."
@@ -35,9 +35,6 @@ if [ -d "/sys/fs/bpf/tetragon" ]; then
   sudo rm -rf /sys/fs/bpf/tetragon/* 2>/dev/null || true
 fi
 
-# Menggunakan tag v1.3.0 untuk kecocokan kernel baru dan menambahkan flag --tracing-policy-dir
-# ... (bagian atas script tetap sama) ...
-
 sudo docker run --name tetragon-sensor -d \
   --privileged --pid=host --net=host \
   -v "$ROOT/tetragon/network_egress_host.yaml:/etc/tetragon/tetragon.tp.d/network_egress_host.yaml" \
@@ -51,7 +48,6 @@ sudo docker run --name tetragon-sensor -d \
   --tracing-policy-dir /etc/tetragon/tetragon.tp.d/ \
   --disable-kprobe-multi
 
-# ... (bagian bawah script tetap sama) ...
 # Berikan waktu bagi Tetragon untuk memuat program eBPF ke kernel
 sleep 15
 
@@ -64,16 +60,22 @@ fi
 
 echo "[2/4] Executing Sample ID $SAMPLE_ID (Directory: $TARGET_DIR)..."
 
-# 1. Jalankan Mock HTTP Server sederhana di background host (port 8080 & 80)
-# Ini menjaga agar request HTTP/TCP dari sampel mendapat respon HTTP 200 OK
+# 1. Jalankan Mock HTTP Server sederhana di background host (port 8080 & port 80)
 sudo docker run --name mock-sinkhole -d --net=host \
   python:3-slim python3 -c '
-import http.server, socketserver
+import http.server, socketserver, threading
 class Handler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self): self.send_response(200); self.end_headers(); self.wfile.write(b"{}")
     def do_POST(self): self.send_response(200); self.end_headers(); self.wfile.write(b"{}")
-with socketserver.TCPServer(("", 8080), Handler) as httpd:
-    httpd.serve_forever()
+def run_port(p):
+    try:
+        with socketserver.TCPServer(("", p), Handler) as httpd:
+            httpd.serve_forever()
+    except Exception:
+        pass
+threading.Thread(target=run_port, args=(8080,), daemon=True).start()
+threading.Thread(target=run_port, args=(80,), daemon=True).start()
+import time; time.sleep(120)
 ' 2>/dev/null || true
 
 # 2. Jalankan sampel Node.js
@@ -99,6 +101,10 @@ echo "[4/4] Moving log to results/ebpf/${SAMPLE_ID}.json..."
 if [ -f "$LOG_TEMP" ]; then
   mv "$LOG_TEMP" "$EBPF_DEST"
   echo "[OK] File eBPF log disimpan di: $EBPF_DEST"
+
+  # Otomatis ekstrak runtime features ke results/runtime_features.csv
+  echo "[INFO] Mengekstrak fitur runtime..."
+  python3 "$ROOT/scripts/extract_runtime_features.py" --input "$EBPF_DEST" --sample-id "$SAMPLE_ID"
 else
   echo "[ERROR] File log temporary tidak ditemukan di $LOG_TEMP!"
 fi
