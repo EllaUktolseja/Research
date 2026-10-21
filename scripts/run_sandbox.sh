@@ -25,9 +25,19 @@ if [ -z "$TARGET_DIR" ]; then
 fi
 
 echo "[1/4] Starting Tetragon Sensor..."
+
+# Cleanup container lama jika masih berjalan
 sudo docker rm -f tetragon-sensor 2>/dev/null || true
 
-# Menggunakan flag --export-filename menggantikan --exported-stdout-file
+# PENTING: Bersihkan pin BPF filesystem sisa crash sebelumnya agar tidak memicu 'invalid argument' / 'sensor already loaded'
+if [ -d "/sys/fs/bpf/tetragon" ]; then
+  echo "[INFO] Membersihkan sisa pin filesystem BPF Tetragon lama..."
+  sudo rm -rf /sys/fs/bpf/tetragon/* 2>/dev/null || true
+fi
+
+# Menggunakan tag v1.3.0 untuk kecocokan kernel baru dan menambahkan flag --tracing-policy-dir
+# ... (bagian atas script tetap sama) ...
+
 sudo docker run --name tetragon-sensor -d \
   --privileged --pid=host --net=host \
   -v "$ROOT/tetragon/network_egress_host.yaml:/etc/tetragon/tetragon.tp.d/network_egress_host.yaml" \
@@ -35,10 +45,15 @@ sudo docker run --name tetragon-sensor -d \
   -v /sys/kernel/debug:/sys/kernel/debug \
   -v /sys/fs/bpf:/sys/fs/bpf \
   -v /etc/os-release:/etc/os-release:ro \
-  quay.io/cilium/tetragon:v1.2.0 \
-  tetragon --export-filename /var/log/tetragon/tetragon-node-control.jsonl
+  quay.io/cilium/tetragon:v1.3.0 \
+  tetragon \
+    --export-filename /var/log/tetragon/tetragon-node-control.jsonl \
+    --tracing-policy-dir /etc/tetragon/tetragon.tp.d/ \
+    --disable-kprobe-multi
 
-sleep 3
+# ... (bagian bawah script tetap sama) ...
+# Berikan waktu bagi Tetragon untuk memuat program eBPF ke kernel
+sleep 15
 
 if ! sudo docker ps | grep -q tetragon-sensor; then
   echo "[ERROR] Tetragon container crash saat startup! Berikut log error Tetragon:"
@@ -48,12 +63,14 @@ if ! sudo docker ps | grep -q tetragon-sensor; then
 fi
 
 echo "[2/4] Executing Sample ID $SAMPLE_ID (Directory: $TARGET_DIR)..."
+# Mengubah '||' menjadi '&&' agar node index.js tetap jalan setelah npm install sukses
 sudo docker run --rm --net=host \
   -v "$TARGET_DIR:/app" \
   -w /app \
   node:20-slim \
-  sh -c "npm install --ignore-scripts=false || node index.js || node ." || true
+  sh -c "npm install --ignore-scripts=false && (node index.js || node .)" || true
 
+# Berikan jeda waktu agar log event eBPF terakhir sempat ter-flush ke disk
 sleep 5
 
 echo "[3/4] Stopping Tetragon Sensor..."
@@ -67,3 +84,4 @@ if [ -f "$LOG_TEMP" ]; then
 else
   echo "[ERROR] File log temporary tidak ditemukan di $LOG_TEMP!"
 fi
+

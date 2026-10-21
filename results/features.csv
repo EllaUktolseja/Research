@@ -4,3 +4,8 @@
 8,unknown,/home/aulia/malware-research/samples/source/8,missing,1,1,1,2153,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,0,1,0,1,1,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,no_components_detected,0
 9,unknown,/home/aulia/malware-research/samples/source/9,missing,1,1,1,2153,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,0,1,0,1,1,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,no_components_detected,0
 10,unknown,/home/aulia/malware-research/samples/source/10,missing,1,1,1,2153,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,0,1,0,1,1,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,no_components_detected,0
+1,unknown,/home/gerry/malware-research/samples/source/1,missing,1,1,1,2153,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,0,1,0,1,1,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,scan_failed,
+2,unknown,/home/gerry/malware-research/samples/source/2,missing,1,1,1,2153,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,0,1,0,1,1,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,scan_failed,
+3,unknown,/home/gerry/malware-research/samples/source/3,missing,1,1,1,2153,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,0,1,0,1,1,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,scan_failed,
+4,unknown,/home/gerry/malware-research/samples/source/4,missing,1,1,1,2153,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,0,1,0,1,1,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,scan_failed,
+5,unknown,/home/gerry/malware-research/samples/source/5,missing,1,1,1,2153,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,0,1,0,1,1,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,scan_failed,

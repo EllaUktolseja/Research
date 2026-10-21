@@ -1,6 +1,11 @@
-﻿log_file,name,package_dir,sbom_status,manifest_status,version,id
-6.json,6,/home/aulia/malware-research/samples/source/6,components_detected,missing,unknown,6
-7.json,7,/home/aulia/malware-research/samples/source/7,0,missing,unknown,7
-8.json,8,/home/aulia/malware-research/samples/source/8,0,missing,unknown,8
-9.json,9,/home/aulia/malware-research/samples/source/9,0,missing,unknown,9
-10.json,10,/home/aulia/malware-research/samples/source/10,0,missing,unknown,10
+﻿sbom_status,version,name,id,log_file,package_dir,manifest_status
+components_detected,unknown,6,6,6.json,/home/aulia/malware-research/samples/source/6,missing
+0,unknown,7,7,7.json,/home/aulia/malware-research/samples/source/7,missing
+0,unknown,8,8,8.json,/home/aulia/malware-research/samples/source/8,missing
+0,unknown,9,9,9.json,/home/aulia/malware-research/samples/source/9,missing
+0,unknown,10,10,10.json,/home/aulia/malware-research/samples/source/10,missing
+,unknown,1,1,1.json,/home/gerry/malware-research/samples/source/1,missing
+,unknown,2,2,2.json,/home/gerry/malware-research/samples/source/2,missing
+,unknown,3,3,3.json,/home/gerry/malware-research/samples/source/3,missing
+,unknown,4,4,4.json,/home/gerry/malware-research/samples/source/4,missing
+,unknown,5,5,5.json,/home/gerry/malware-research/samples/source/5,missing

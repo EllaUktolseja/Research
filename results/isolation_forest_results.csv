@@ -1,6 +1,11 @@
 ﻿id,name,version,log_file,anomaly_score,model_label,interpretation
-10,10,unknown,10.json,-0.101778,potential_outlier,exploratory_only
-8,8,unknown,8.json,-0.092,potential_outlier,exploratory_only
-9,9,unknown,9.json,0.093859,inlier,exploratory_only
-7,7,unknown,7.json,0.131333,inlier,exploratory_only
-6,6,unknown,6.json,0.16335,inlier,exploratory_only
+2,2,unknown,2.json,-0.15663,potential_outlier,exploratory_only
+10,10,unknown,10.json,-0.10521,potential_outlier,exploratory_only
+8,8,unknown,8.json,-0.088974,potential_outlier,exploratory_only
+4,4,unknown,4.json,-0.027505,potential_outlier,exploratory_only
+9,9,unknown,9.json,0.019711,inlier,exploratory_only
+5,5,unknown,5.json,0.023899,inlier,exploratory_only
+7,7,unknown,7.json,0.047058,inlier,exploratory_only
+1,1,unknown,1.json,0.064332,inlier,exploratory_only
+3,3,unknown,3.json,0.064332,inlier,exploratory_only
+6,6,unknown,6.json,0.07039,inlier,exploratory_only
