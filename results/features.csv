@@ -9,3 +9,13 @@
 3,unknown,/home/gerry/malware-research/samples/source/3,missing,1,1,1,2153,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,0,1,0,1,1,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,scan_failed,
 4,unknown,/home/gerry/malware-research/samples/source/4,missing,1,1,1,2153,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,0,1,0,1,1,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,scan_failed,
 5,unknown,/home/gerry/malware-research/samples/source/5,missing,1,1,1,2153,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,0,1,0,1,1,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,scan_failed,
+11,unknown,/home/gerry/malware-research/samples/source/11,missing,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,no_components_detected,0
+12,unknown,/home/gerry/malware-research/samples/source/12,missing,1,1,1,1874,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,0,1,1,0,1,0,0,1,0,1,1,1,0,1,1,0,0,0,0,0,no_components_detected,0
+13,unknown,/home/gerry/malware-research/samples/source/13,missing,1,1,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,no_components_detected,0
+14,unknown,/home/gerry/malware-research/samples/source/14,missing,1,1,1,993,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,1,1,0,0,0,0,1,0,0,0,1,1,0,1,1,0,0,0,0,0,no_components_detected,0
+15,unknown,/home/gerry/malware-research/samples/source/15,missing,1,1,1,50,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,no_components_detected,0
+16,unknown,/home/gerry/malware-research/samples/source/16,missing,1,1,1,4147105,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,no_components_detected,0
+17,unknown,/home/gerry/malware-research/samples/source/17,missing,1,1,1,1218,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,0,1,0,0,1,0,0,0,0,1,1,0,0,1,1,0,0,0,0,0,no_components_detected,0
+18,unknown,/home/gerry/malware-research/samples/source/18,missing,1,1,1,2020,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,0,1,0,0,1,0,0,0,0,1,1,0,0,1,1,0,0,0,0,0,no_components_detected,0
+19,unknown,/home/gerry/malware-research/samples/source/19,missing,1,1,1,3536,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,no_components_detected,0
+20,unknown,/home/gerry/malware-research/samples/source/20,missing,1,1,1,1899,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,1,0,0,0,0,0,0,0,no_components_detected,0
