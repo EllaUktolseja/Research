@@ -78,14 +78,14 @@ threading.Thread(target=run_port, args=(80,), daemon=True).start()
 import time; time.sleep(120)
 ' 2>/dev/null || true
 
-# 2. Jalankan sampel Node.js
-# Tambahkan timeout agar proses tidak menggantung jika sampel loop selamanya,
-# dan pastikan log eBPF sempat menangkap syscall sebelum kontainer mati
+# 2. Jalankan sampel Node.js:
+# - npm install dijalankan agar hook preinstall/install/postinstall terpanggil
+# - Jika index.js ada, eksekusi timeout 10 detik. Jika tidak ada (umum pada library benign), fallback require main file / dir
 sudo docker run --rm --net=host \
   -v "$TARGET_DIR:/app" \
   -w /app \
   node:20-slim \
-  sh -c "npm install --ignore-scripts=false && timeout 10s node index.js" || true
+  sh -c "npm install --ignore-scripts=false && (if [ -f index.js ]; then timeout 10s node index.js || true; else timeout 5s node -e 'try { require(\"./\") } catch(e) {}' || true; fi)" || true
 
 # 3. Bersihkan mock server
 sudo docker rm -f mock-sinkhole 2>/dev/null || true

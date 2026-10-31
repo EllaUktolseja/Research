@@ -23,11 +23,13 @@ flowchart TD
 ## Rincian Script
 
 ### 1. `manage_inventory.py`
-* **Fungsi:** Mandor dataset & downloader sampel.
+* **Fungsi:** Mandor dataset & downloader sampel (mendukung Malware Datadog via wget/unzip dan Benign npm via `npm pack`).
 * **Penggunaan:**
   * Validasi CSV: `python scripts/manage_inventory.py --validate`
-  * Lihat daftar paket: `python scripts/manage_inventory.py --list 10`
-  * Download & ekstrak sampel: `python scripts/manage_inventory.py --get 1` (otomatis ekstrak ke `samples/source/1/`)
+  * Lihat daftar paket: `python scripts/manage_inventory.py --list 10` (bisa tambah filter `--category benign` atau `--category malicious`)
+  * Ingest kandidat benign: `python scripts/manage_inventory.py --ingest-benign 50` (mendaftarkan 50 paket dari `data/raw/benign_candidates_1000.csv`)
+  * Download satu sampel: `python scripts/manage_inventory.py --get 148` (otomatis ekstrak ke `samples/source/148/package/`)
+  * Download rentang sampel: `python scripts/manage_inventory.py --get-range 148-167`
 
 ### 2. `scan_sbom.sh`
 * **Fungsi:** Membuat daftar komponen perangkat lunak (SBOM format CycloneDX JSON) menggunakan Syft.

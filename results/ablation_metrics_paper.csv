@@ -1,0 +1,4 @@
+﻿variant,roc_auc,precision,recall,f1_score,fpr,tp,fp,tn,fn
+Static+SBOM,0.005,0.9778,0.44,0.6069,1.0,44,1,0,56
+Runtime_eBPF,0.0,0.9778,0.44,0.6069,1.0,44,1,0,56
+Hybrid_Combined,0.0,0.9778,0.44,0.6069,1.0,44,1,0,56

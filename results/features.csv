@@ -99,3 +99,4 @@
 98,@athena-ui-components/deeplink,0.0.42,/home/gerry/malware-research/samples/source/98,parsed,1,1,1,4732,0,0,1,2,1,0,1,0,0,1,0,0,0,0,0,1,1,1,0,1,0,0,0,0,1,0,1,1,0,0,1,1,0,0,0,0,0,0,0,0,no_components_detected
 99,@athena-ui-components/graceful-degradation,1.1.27,/home/gerry/malware-research/samples/source/99,parsed,1,1,1,4732,0,0,1,2,1,0,1,0,0,1,0,0,0,0,0,1,1,1,0,1,0,0,0,0,1,0,1,1,0,0,1,1,0,0,0,0,0,0,0,0,no_components_detected
 100,@athena-ui-components/helpers,1.1.24,/home/gerry/malware-research/samples/source/100,parsed,1,1,1,4732,0,0,1,2,1,0,1,0,0,1,0,0,0,0,0,1,1,1,0,1,0,0,0,0,1,0,1,1,0,0,1,1,0,0,0,0,0,0,0,0,no_components_detected
+148,semver,7.8.5,/home/archie/Documents/malware-research/samples/source/148,parsed,49,49,49,72316,0,0,1,8,0,0,0,0,1,0,4,0,4,0,0,0,0,0,0,0,0,0,0,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,not_supplied

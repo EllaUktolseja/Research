@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Prepare dataset for Isolation Forest model.
 Supports generating static-only, runtime-only, and combined feature matrices.
+Preserves ground-truth reference_label (benign/malicious) for paper evaluation.
 """
 
 import argparse
@@ -16,6 +17,7 @@ IDENTIFIERS = {
     "log_file",
     "manifest_status",
     "sbom_status",
+    "reference_label",
 }
 
 
@@ -60,6 +62,21 @@ def write_csv(output_path: Path, fieldnames: list[str], rows: list[dict]):
             writer.writerow(clean_row)
 
 
+def load_inventory_labels(inventory_path: Path) -> dict[str, str]:
+    """Map sample ID to ground-truth reference_label."""
+    labels = {}
+    if not inventory_path.is_file():
+        return labels
+
+    with inventory_path.open("r", encoding="utf-8-sig") as f:
+        for r in csv.DictReader(f):
+            sid = r.get("id", "").strip()
+            label = r.get("reference_label", "").strip().lower()
+            if sid:
+                labels[sid] = label
+    return labels
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Prepare datasets for Static, Runtime, and Hybrid Isolation Forest models."
@@ -67,7 +84,7 @@ def main():
     parser.add_argument(
         "--input",
         type=Path,
-        help="Path ke file input fitur (default: results/combined_features.csv)",
+        help="Path ke file input fitur (default: results/combined_features.csv atau features.csv)",
     )
     parser.add_argument(
         "--drop-constant",
@@ -84,10 +101,10 @@ def main():
 
     ROOT = Path(__file__).resolve().parent.parent
     RESULTS_DIR = ROOT / "results"
+    INVENTORY_FILE = ROOT / "samples" / "inventory.csv"
 
     input_file = args.input.resolve() if args.input else RESULTS_DIR / "combined_features.csv"
     if not input_file.is_file():
-        # Fallback ke features.csv jika combined belum ada
         input_file = RESULTS_DIR / "features.csv"
 
     if not input_file.is_file():
@@ -103,10 +120,21 @@ def main():
         print("[ERROR] Dataset kosong.")
         return
 
+    # Load ground-truth labels from inventory
+    labels_map = load_inventory_labels(INVENTORY_FILE)
+    for r in rows:
+        sid = r.get("id", "")
+        # Attach reference_label if not already present or empty
+        if not r.get("reference_label"):
+            r["reference_label"] = labels_map.get(sid, "unknown")
+
     drop_const = not args.keep_all
 
     all_cols = list(rows[0].keys())
+    # Ensure reference_label is in metadata columns
     metadata_columns = [c for c in IDENTIFIERS if c in all_cols]
+    if "reference_label" not in metadata_columns:
+        metadata_columns.append("reference_label")
 
     # Klasifikasi kolom: static vs runtime
     static_candidate_cols = [
@@ -122,7 +150,7 @@ def main():
     runtime_cols, runtime_excluded = filter_features(rows, runtime_candidate_cols, drop_constant=drop_const)
     combined_cols = static_cols + runtime_cols
 
-    # Simpan Metadata
+    # Simpan Metadata (termasuk reference_label untuk evaluasi paper)
     metadata_path = RESULTS_DIR / "features_model_metadata.csv"
     metadata_rows = [{c: row.get(c, "") for c in metadata_columns} for row in rows]
     write_csv(metadata_path, metadata_columns, metadata_rows)
@@ -149,10 +177,10 @@ def main():
     print(f"Fitur Static/SBOM Digunakan : {len(static_cols)} (Dikecualikan: {len(static_excluded)})")
     print(f"Fitur Runtime/eBPF Digunakan: {len(runtime_cols)} (Dikecualikan: {len(runtime_excluded)})")
     print(f"Fitur Combined Digunakan    : {len(combined_cols)}")
-    print(f"\n[OK] Metadata file   : {metadata_path}")
-    print(f"[OK] Static dataset  : {static_path}")
-    print(f"[OK] Runtime dataset : {runtime_path}")
-    print(f"[OK] Combined dataset: {combined_path}")
+    print(f"\n[OK] Metadata (w/ labels) : {metadata_path}")
+    print(f"[OK] Static dataset       : {static_path}")
+    print(f"[OK] Runtime dataset      : {runtime_path}")
+    print(f"[OK] Combined dataset     : {combined_path}")
 
 
 if __name__ == "__main__":
