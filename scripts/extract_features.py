@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Static and SBOM feature extraction for npm packages.
 Does not execute package code or scripts.
+Supports single sample, all samples, and range batch processing (e.g. 1-50).
 """
 
 from __future__ import annotations
@@ -120,14 +121,12 @@ def matches(pattern: str, text: str) -> int:
 
 
 def find_target_dir_and_manifest(package_dir: Path) -> tuple[Path, Path | None, dict[str, Any], str]:
-    """Finds package.json directly or searches nested subdirectories."""
     direct_json = package_dir / "package.json"
     if direct_json.is_file():
         manifest, status = read_json(direct_json)
         if isinstance(manifest, dict):
             return package_dir, direct_json, manifest, status
 
-    # Search recursively for nested package.json (common when extracting tarball/zip)
     candidates = [
         p for p in package_dir.rglob("package.json")
         if "node_modules" not in p.parts and ".git" not in p.parts
@@ -143,7 +142,6 @@ def find_target_dir_and_manifest(package_dir: Path) -> tuple[Path, Path | None, 
 
 
 def parse_sbom(sbom_path: Path | None) -> tuple[int, int, int, str]:
-    """Returns (component_count, dependency_count, has_dependencies, status)."""
     if sbom_path is None or not sbom_path.is_file():
         return 0, 0, 0, "not_supplied"
 
@@ -181,7 +179,6 @@ def extract(package_dir: Path, sbom_path: Path | None = None, sample_id: str | N
         for group in DEPENDENCY_GROUPS
     }
 
-    # Gather JS files from the sample directory
     js_files = sorted(
         p
         for p in package_dir.rglob("*")
@@ -205,12 +202,11 @@ def extract(package_dir: Path, sbom_path: Path | None = None, sample_id: str | N
     script_text = "\n".join(str(v) for v in scripts.values())
     combined = source + "\n" + script_text
 
-    # Resolve Sample ID
     inferred_id = sample_id or package_dir.name
     pkg_name = str(manifest.get("name", inferred_id))
     pkg_version = str(manifest.get("version", "unknown"))
 
-    # Resolve SBOM if not provided explicitly
+    # Resolve SBOM
     if sbom_path is None or not sbom_path.is_file():
         ROOT_DIR = Path(__file__).resolve().parent.parent
         possible_sboms = [
@@ -265,11 +261,10 @@ def extract(package_dir: Path, sbom_path: Path | None = None, sample_id: str | N
     result["sbom_has_dependencies"] = has_deps
     result["sbom_status"] = sbom_status
 
-    # Guarantee canonical order
     return {col: result.get(col, 0) for col in FEATURE_COLUMNS}
 
 
-def save_or_update_csv(row: dict[str, Any], output_csv: Path) -> None:
+def save_or_update_batch(rows: list[dict[str, Any]], output_csv: Path) -> None:
     output_csv.parent.mkdir(parents=True, exist_ok=True)
     rows_by_id: dict[str, dict[str, Any]] = {}
 
@@ -277,18 +272,19 @@ def save_or_update_csv(row: dict[str, Any], output_csv: Path) -> None:
         with output_csv.open("r", encoding="utf-8-sig", newline="") as f:
             reader = csv.DictReader(f)
             for r in reader:
-                r_id = r.get("id") or r.get("package_dir", "")
+                r_id = str(r.get("id") or r.get("package_dir", ""))
                 rows_by_id[r_id] = r
 
-    # Update or insert
-    current_id = str(row["id"])
-    rows_by_id[current_id] = row
+    for row in rows:
+        current_id = str(row["id"])
+        rows_by_id[current_id] = row
 
     with output_csv.open("w", encoding="utf-8-sig", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=FEATURE_COLUMNS)
         writer.writeheader()
-        for r in rows_by_id.values():
-            # Pad missing keys
+        sorted_keys = sorted(rows_by_id.keys(), key=lambda k: int(k) if k.isdigit() else k)
+        for k in sorted_keys:
+            r = rows_by_id[k]
             clean_r = {col: r.get(col, 0) for col in FEATURE_COLUMNS}
             writer.writerow(clean_r)
 
@@ -296,10 +292,25 @@ def save_or_update_csv(row: dict[str, Any], output_csv: Path) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "package_dir", type=Path, help="Path to extracted package/ directory"
+        "target",
+        nargs="?",
+        default=None,
+        help="Path folder sampel (misal samples/source/1), ID sampel (1), atau rentang batch (misal 1-50)",
     )
     parser.add_argument(
-        "--id", type=str, default=None, help="Sample ID (defaults to folder name)"
+        "--all",
+        action="store_true",
+        help="Ekstrak fitur semua sampel yang ada di samples/source/",
+    )
+    parser.add_argument(
+        "--range",
+        type=str,
+        default=None,
+        metavar="START-END",
+        help="Rentang batch ID sampel (contoh: 1-50)",
+    )
+    parser.add_argument(
+        "--id", type=str, default=None, help="Sample ID eksplisit (mode single)"
     )
     parser.add_argument(
         "--sbom", type=Path, default=None, help="Optional Syft/CycloneDX SBOM JSON path"
@@ -312,22 +323,74 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    package_dir = args.package_dir.expanduser().resolve()
-    if not package_dir.is_dir():
-        parser.error(f"Package directory does not exist: {package_dir}")
-
     ROOT_DIR = Path(__file__).resolve().parent.parent
     output_csv = args.output.expanduser().resolve() if args.output else ROOT_DIR / "results" / "features.csv"
+    source_root = ROOT_DIR / "samples" / "source"
 
-    sample_id = args.id or (package_dir.name if package_dir.name.isdigit() else None)
+    # Batch range mode
+    range_str = args.range or (args.target if args.target and "-" in args.target and not Path(args.target).is_dir() else None)
+    if range_str:
+        try:
+            start_s, end_s = range_str.split("-")
+            start_id, end_id = int(start_s), int(end_s)
+        except ValueError:
+            parser.error("Format range harus START-END (misal 1-50)")
+            return
+
+        extracted = []
+        for sid in range(start_id, end_id + 1):
+            pkg_dir = source_root / str(sid)
+            if pkg_dir.is_dir():
+                res = extract(pkg_dir, sample_id=str(sid))
+                extracted.append(res)
+                print(f"[OK] Extracted features ID {sid:<3} ({res['name']})")
+            else:
+                print(f"[SKIP] Folder sampel ID {sid} tidak ditemukan.")
+
+        if extracted:
+            save_or_update_batch(extracted, output_csv)
+            print(f"\n[OK] Berhasil mengekstrak {len(extracted)} sampel ke: {output_csv}")
+        return
+
+    # All mode
+    if args.all or (args.target == "all"):
+        sample_dirs = sorted(
+            [d for d in source_root.iterdir() if d.is_dir()],
+            key=lambda d: int(d.name) if d.name.isdigit() else d.name,
+        )
+        extracted = []
+        for d in sample_dirs:
+            sid = d.name
+            res = extract(d, sample_id=sid)
+            extracted.append(res)
+            print(f"[OK] Extracted features ID {sid:<3} ({res['name']})")
+
+        if extracted:
+            save_or_update_batch(extracted, output_csv)
+            print(f"\n[OK] Berhasil mengekstrak {len(extracted)} sampel ke: {output_csv}")
+        return
+
+    # Single mode
+    if not args.target:
+        parser.print_help()
+        return
+
+    target_path = Path(args.target).expanduser()
+    if not target_path.is_dir():
+        # Coba periksa apakah target berupa numeric ID
+        if args.target.isdigit() and (source_root / args.target).is_dir():
+            target_path = source_root / args.target
+        else:
+            parser.error(f"Direktori sampel tidak ditemukan: {args.target}")
+
+    sample_id = args.id or (target_path.name if target_path.name.isdigit() else None)
     result = extract(
-        package_dir,
+        target_path,
         args.sbom.expanduser().resolve() if args.sbom else None,
         sample_id=sample_id,
     )
 
-    save_or_update_csv(result, output_csv)
-
+    save_or_update_batch([result], output_csv)
     print(json.dumps(result, indent=2, ensure_ascii=False))
     print(f"\n[OK] Fitur ID {result['id']} berhasil diekstrak dan disimpan ke: {output_csv}")
 

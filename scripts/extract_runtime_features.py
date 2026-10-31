@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Extract runtime features from Tetragon eBPF logs."""
+"""Extract runtime features from Tetragon eBPF logs.
+Supports single log, all logs, and range batch processing (e.g. 1-50).
+"""
 
 import argparse
 import json
@@ -44,7 +46,6 @@ def extract_from_logfile(input_path: Path, sample_id: str) -> dict[str, Any]:
                 invalid_lines += 1
                 continue
 
-            # Process execution and exit
             for event_type in ("process_exec", "process_exit"):
                 block = event.get(event_type)
                 if block:
@@ -58,7 +59,6 @@ def extract_from_logfile(input_path: Path, sample_id: str) -> dict[str, Any]:
                             if event_type == "process_exec":
                                 shell_spawns += 1
 
-            # Kprobes
             block = event.get("process_kprobe")
             if not block:
                 continue
@@ -73,12 +73,10 @@ def extract_from_logfile(input_path: Path, sample_id: str) -> dict[str, Any]:
                     processes.add(binary)
 
                 for arg in block.get("args", []):
-                    # Format 1: sock_arg (tcp_connect)
                     sock = arg.get("sock_arg", {})
                     ip = sock.get("daddr")
                     port = sock.get("dport")
 
-                    # Format 2: sockaddr (sys_enter_connect)
                     sockaddr = arg.get("sockaddr_arg", {})
                     if not ip:
                         ip = sockaddr.get("sin_addr") or sockaddr.get("sin6_addr")
@@ -112,7 +110,7 @@ def save_or_update_csv(rows: list[dict[str, Any]], output_path: Path) -> None:
         with output_path.open(encoding="utf-8-sig", newline="") as f:
             reader = csv.DictReader(f)
             for r in reader:
-                sid = r.get("sample_id", "")
+                sid = str(r.get("sample_id", ""))
                 if sid:
                     rows_by_id[sid] = r
 
@@ -123,7 +121,6 @@ def save_or_update_csv(rows: list[dict[str, Any]], output_path: Path) -> None:
     with output_path.open("w", encoding="utf-8-sig", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=RUNTIME_FEATURE_COLUMNS)
         writer.writeheader()
-        # Sort by integer ID if numeric
         sorted_keys = sorted(rows_by_id.keys(), key=lambda k: int(k) if k.isdigit() else k)
         for k in sorted_keys:
             r = rows_by_id[k]
@@ -136,9 +133,15 @@ def main():
         description="Extract runtime features from Tetragon eBPF logs."
     )
     parser.add_argument(
+        "target",
+        nargs="?",
+        default=None,
+        help="Path ke file event eBPF tunggal, ID sampel, atau rentang batch (contoh: 1-50)",
+    )
+    parser.add_argument(
         "--input",
         type=Path,
-        help="Path ke file event eBPF tunggal (misal logs/tetragon-node-control.jsonl atau results/ebpf/1.json)",
+        help="Path ke file event eBPF tunggal",
     )
     parser.add_argument(
         "--output",
@@ -149,7 +152,14 @@ def main():
         "--sample-id",
         type=str,
         default=None,
-        help="ID sampel untuk baris ini",
+        help="ID sampel untuk mode file tunggal",
+    )
+    parser.add_argument(
+        "--range",
+        type=str,
+        default=None,
+        metavar="START-END",
+        help="Rentang batch ID log eBPF (contoh: 1-50)",
     )
     parser.add_argument(
         "--all",
@@ -160,16 +170,42 @@ def main():
 
     ROOT = Path(__file__).resolve().parent.parent
     RESULTS_DIR = ROOT / "results"
+    EBPF_DIR = RESULTS_DIR / "ebpf"
     output_path = args.output.resolve() if args.output else RESULTS_DIR / "runtime_features.csv"
 
-    if args.all:
-        ebpf_dir = RESULTS_DIR / "ebpf"
+    # Batch range mode
+    range_str = args.range or (args.target if args.target and "-" in args.target and not Path(args.target).is_file() else None)
+    if range_str:
+        try:
+            start_s, end_s = range_str.split("-")
+            start_id, end_id = int(start_s), int(end_s)
+        except ValueError:
+            parser.error("Format range harus START-END (contoh: 1-50)")
+            return
+
+        extracted = []
+        for sid in range(start_id, end_id + 1):
+            log_file = EBPF_DIR / f"{sid}.json"
+            if log_file.is_file():
+                row = extract_from_logfile(log_file, str(sid))
+                extracted.append(row)
+                print(f"[OK] Extracted runtime log ID {sid:<3} ({log_file.name})")
+            else:
+                print(f"[SKIP] File log eBPF ID {sid} tidak ditemukan di {EBPF_DIR}.")
+
+        if extracted:
+            save_or_update_csv(extracted, output_path)
+            print(f"\n[OK] Berhasil memperbarui {len(extracted)} baris di {output_path}")
+        return
+
+    # All mode
+    if args.all or (args.target == "all"):
         json_files = sorted(
-            ebpf_dir.glob("*.json"),
+            EBPF_DIR.glob("*.json"),
             key=lambda p: int(p.stem) if p.stem.isdigit() else p.stem,
         )
         if not json_files:
-            print(f"[ERROR] Tidak ada file .json di {ebpf_dir}")
+            print(f"[ERROR] Tidak ada file .json di {EBPF_DIR}")
             return
 
         extracted_rows = []
@@ -183,8 +219,20 @@ def main():
         print(f"\n[OK] Berhasil memperbarui {len(extracted_rows)} baris di {output_path}")
         return
 
-    # Single file mode
-    input_path = args.input.resolve() if args.input else ROOT / "logs" / "tetragon-node-control.jsonl"
+    # Single mode
+    input_path = None
+    if args.input:
+        input_path = args.input.resolve()
+    elif args.target:
+        p = Path(args.target).resolve()
+        if p.is_file():
+            input_path = p
+        elif (EBPF_DIR / f"{args.target}.json").is_file():
+            input_path = EBPF_DIR / f"{args.target}.json"
+
+    if not input_path:
+        input_path = ROOT / "logs" / "tetragon-node-control.jsonl"
+
     if not input_path.exists():
         print(f"[ERROR] File log tidak ditemukan: {input_path}")
         return

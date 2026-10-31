@@ -1,68 +1,69 @@
 #!/usr/bin/env bash
 set -e
 
-SAMPLE_ID=${1:-"1"}
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-
 LOG_TEMP="$ROOT/logs/tetragon-node-control.jsonl"
-EBPF_DEST="$ROOT/results/ebpf/${SAMPLE_ID}.json"
 
 mkdir -p "$ROOT/results/ebpf" "$ROOT/logs"
-rm -f "$LOG_TEMP"
 
-# 1. Cek folder sampel & cari posisi package.json
-SAMPLE_DIR="$ROOT/samples/source/$SAMPLE_ID"
-if [ ! -d "$SAMPLE_DIR" ]; then
-  echo "[ERROR] Folder $SAMPLE_DIR tidak ditemukan! Jalankan 'python scripts/manage_inventory.py --get $SAMPLE_ID' terlebih dahulu."
-  exit 1
-fi
+run_single_sample() {
+  local sample_id="$1"
+  local ebpf_dest="$ROOT/results/ebpf/${sample_id}.json"
+  local sample_dir="$ROOT/samples/source/$sample_id"
 
-TARGET_DIR=$(find "$SAMPLE_DIR" -name "package.json" -not -path '*/node_modules/*' -not -path '*/.git/*' -exec dirname {} \; | head -n 1)
+  if [ ! -d "$sample_dir" ]; then
+    echo "[SKIP] Folder sampel ID $sample_id tidak ditemukan ($sample_dir)."
+    return
+  fi
 
-if [ -z "$TARGET_DIR" ]; then
-  echo "[WARNING] Tidak ditemukan package.json di $SAMPLE_DIR, menggunakan root sampel."
-  TARGET_DIR="$SAMPLE_DIR"
-fi
+  local target_dir
+  target_dir=$(find "$sample_dir" -name "package.json" -not -path '*/node_modules/*' -not -path '*/.git/*' -exec dirname {} \; | head -n 1)
+  if [ -z "$target_dir" ]; then
+    echo "[WARNING] Tidak ditemukan package.json di $sample_dir, menggunakan root sampel."
+    target_dir="$sample_dir"
+  fi
 
-echo "[1/4] Starting Tetragon Sensor..."
+  rm -f "$LOG_TEMP"
 
-# Cleanup container lama jika masih berjalan
-sudo docker rm -f tetragon-sensor 2>/dev/null || true
+  echo "================================================================================"
+  echo ">>> [START SANDBOX] Sample ID: $sample_id (Directory: $target_dir)"
+  echo "================================================================================"
 
-# PENTING: Bersihkan pin BPF filesystem sisa crash sebelumnya agar tidak memicu 'invalid argument' / 'sensor already loaded'
-if [ -d "/sys/fs/bpf/tetragon" ]; then
-  echo "[INFO] Membersihkan sisa pin filesystem BPF Tetragon lama..."
-  sudo rm -rf /sys/fs/bpf/tetragon/* 2>/dev/null || true
-fi
+  # 1. Bersihkan sisa container dan pin BPF lama
+  sudo docker rm -f tetragon-sensor mock-sinkhole 2>/dev/null || true
+  if [ -d "/sys/fs/bpf/tetragon" ]; then
+    sudo rm -rf /sys/fs/bpf/tetragon/* 2>/dev/null || true
+  fi
 
-sudo docker run --name tetragon-sensor -d \
-  --privileged --pid=host --net=host \
-  -v "$ROOT/tetragon/network_egress_host.yaml:/etc/tetragon/tetragon.tp.d/network_egress_host.yaml" \
-  -v "$ROOT/logs:/var/log/tetragon" \
-  -v /sys/kernel/debug:/sys/kernel/debug \
-  -v /sys/fs/bpf:/sys/fs/bpf \
-  -v /etc/os-release:/etc/os-release:ro \
-  quay.io/cilium/tetragon:v1.3.0 \
-  tetragon \
-  --export-filename /var/log/tetragon/tetragon-node-control.jsonl \
-  --tracing-policy-dir /etc/tetragon/tetragon.tp.d/ \
-  --disable-kprobe-multi
+  # 2. Jalankan Tetragon Sensor
+  echo "[1/4] Starting Tetragon Sensor..."
+  sudo docker run --name tetragon-sensor -d \
+    --privileged --pid=host --net=host \
+    -v "$ROOT/tetragon/network_egress_host.yaml:/etc/tetragon/tetragon.tp.d/network_egress_host.yaml" \
+    -v "$ROOT/logs:/var/log/tetragon" \
+    -v /sys/kernel/debug:/sys/kernel/debug \
+    -v /sys/fs/bpf:/sys/fs/bpf \
+    -v /etc/os-release:/etc/os-release:ro \
+    quay.io/cilium/tetragon:v1.3.0 \
+    tetragon \
+    --export-filename /var/log/tetragon/tetragon-node-control.jsonl \
+    --tracing-policy-dir /etc/tetragon/tetragon.tp.d/ \
+    --disable-kprobe-multi
 
-# Berikan waktu bagi Tetragon untuk memuat program eBPF ke kernel
-sleep 15
+  # Berikan jeda waktu agar sensor ter-attach ke kernel
+  sleep 15
 
-if ! sudo docker ps | grep -q tetragon-sensor; then
-  echo "[ERROR] Tetragon container crash saat startup! Berikut log error Tetragon:"
-  sudo docker logs tetragon-sensor || true
-  sudo docker rm -f tetragon-sensor 2>/dev/null || true
-  exit 1
-fi
+  if ! sudo docker ps | grep -q tetragon-sensor; then
+    echo "[ERROR] Tetragon sensor crash saat startup untuk ID $sample_id! Menampilkan log error:"
+    sudo docker logs tetragon-sensor || true
+    sudo docker rm -f tetragon-sensor 2>/dev/null || true
+    return
+  fi
 
-echo "[2/4] Executing Sample ID $SAMPLE_ID (Directory: $TARGET_DIR)..."
-
-# 1. Jalankan Mock HTTP Server sederhana di background host (port 8080 & port 80)
-sudo docker run --name mock-sinkhole -d --net=host \
-  python:3-slim python3 -c '
+  # 3. Jalankan Mock Sinkhole Server (Port 80 & 8080)
+  echo "[2/4] Executing Mock Sinkhole & Sample inside sandbox..."
+  sudo docker run --name mock-sinkhole -d --net=host \
+    python:3-slim python3 -c '
 import http.server, socketserver, threading
 class Handler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self): self.send_response(200); self.end_headers(); self.wfile.write(b"{}")
@@ -78,33 +79,46 @@ threading.Thread(target=run_port, args=(80,), daemon=True).start()
 import time; time.sleep(120)
 ' 2>/dev/null || true
 
-# 2. Jalankan sampel Node.js:
-# - npm install dijalankan agar hook preinstall/install/postinstall terpanggil
-# - Jika index.js ada, eksekusi timeout 10 detik. Jika tidak ada (umum pada library benign), fallback require main file / dir
-sudo docker run --rm --net=host \
-  -v "$TARGET_DIR:/app" \
-  -w /app \
-  node:20-slim \
-  sh -c "npm install --ignore-scripts=false && (if [ -f index.js ]; then timeout 10s node index.js || true; else timeout 5s node -e 'try { require(\"./\") } catch(e) {}' || true; fi)" || true
+  # 4. Eksekusi Node.js sampel di isolated container
+  sudo docker run --rm --net=host \
+    -v "$target_dir:/app" \
+    -w /app \
+    node:20-slim \
+    sh -c "npm install --ignore-scripts=false && (if [ -f index.js ]; then timeout 10s node index.js || true; else timeout 5s node -e 'try { require(\"./\") } catch(e) {}' || true; fi)" || true
 
-# 3. Bersihkan mock server
-sudo docker rm -f mock-sinkhole 2>/dev/null || true
+  # Bersihkan mock sinkhole
+  sudo docker rm -f mock-sinkhole 2>/dev/null || true
 
-# Berikan jeda waktu agar log event eBPF terakhir sempat ter-flush ke disk
-sleep 10
+  # Jeda flush log eBPF ke disk
+  sleep 10
 
-echo "[3/4] Stopping Tetragon Sensor..."
-sudo docker stop tetragon-sensor 2>/dev/null || true
-sudo docker rm -f tetragon-sensor 2>/dev/null || true
+  # 5. Stop Tetragon Sensor
+  echo "[3/4] Stopping Tetragon Sensor..."
+  sudo docker stop tetragon-sensor 2>/dev/null || true
+  sudo docker rm -f tetragon-sensor 2>/dev/null || true
 
-echo "[4/4] Moving log to results/ebpf/${SAMPLE_ID}.json..."
-if [ -f "$LOG_TEMP" ]; then
-  mv "$LOG_TEMP" "$EBPF_DEST"
-  echo "[OK] File eBPF log disimpan di: $EBPF_DEST"
+  # 6. Pindahkan log eBPF dan otomatis ekstrak fitur runtime
+  echo "[4/4] Saving and extracting runtime log..."
+  if [ -f "$LOG_TEMP" ]; then
+    mv "$LOG_TEMP" "$ebpf_dest"
+    echo "[OK] File eBPF log disimpan di: $ebpf_dest"
+    python3 "$ROOT/scripts/extract_runtime_features.py" --input "$ebpf_dest" --sample-id "$sample_id"
+  else
+    echo "[ERROR] File log temporary tidak ditemukan di $LOG_TEMP!"
+  fi
+  echo
+}
 
-  # Otomatis ekstrak runtime features ke results/runtime_features.csv
-  echo "[INFO] Mengekstrak fitur runtime..."
-  python3 "$ROOT/scripts/extract_runtime_features.py" --input "$EBPF_DEST" --sample-id "$SAMPLE_ID"
+TARGET="${1:-1}"
+
+if [[ "$TARGET" =~ ^[0-9]+-[0-9]+$ ]]; then
+  IFS='-' read -r start_id end_id <<< "$TARGET"
+  echo "================================================================================"
+  echo ">>> [BATCH EXECUTION] Menjalankan sandbox untuk rentang ID: $start_id sampai $end_id"
+  echo "================================================================================"
+  for (( id=start_id; id<=end_id; id++ )); do
+    run_single_sample "$id"
+  done
 else
-  echo "[ERROR] File log temporary tidak ditemukan di $LOG_TEMP!"
+  run_single_sample "$TARGET"
 fi

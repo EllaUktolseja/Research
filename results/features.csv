@@ -13,7 +13,7 @@
 12,0x-smart-contracts,99.99.99,/home/gerry/malware-research/samples/source/12,parsed,1,1,1,1874,0,0,1,1,1,0,0,0,0,1,0,0,0,0,0,1,1,0,1,1,0,1,0,0,1,0,1,1,1,0,1,1,0,0,0,0,0,0,0,0,no_components_detected
 13,0xmisoke,1.0.0,/home/gerry/malware-research/samples/source/13,parsed,1,1,0,0,0,1,1,1,0,0,0,0,1,0,31,31,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,no_components_detected
 14,1231dai,1.0.0,/home/gerry/malware-research/samples/source/14,parsed,1,1,1,993,0,0,1,1,1,0,0,0,0,1,0,0,0,0,0,1,0,1,1,0,0,0,0,1,0,0,0,1,1,0,1,1,0,0,0,0,0,0,0,0,no_components_detected
-15,1inch-p2p-sdk,0.1.0,/home/gerry/malware-research/samples/source/15,parsed,1,1,1,50,0,0,1,1,0,0,0,0,1,0,5,4,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,no_components_detected
+15,1inch-p2p-sdk,0.1.0,/home/archie/Documents/malware-research/samples/source/15,parsed,1,1,1,50,0,0,1,1,0,0,0,0,1,0,5,4,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,no_components_detected
 16,1kzr,1.0.0,/home/gerry/malware-research/samples/source/16,parsed,1,1,1,4147105,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,no_components_detected
 17,1password-sdk-examples,1.0.0,/home/gerry/malware-research/samples/source/17,parsed,1,1,1,1218,0,0,1,2,1,0,0,0,1,1,0,0,0,0,0,1,1,0,1,0,0,1,0,0,0,0,1,1,0,0,1,1,0,0,0,0,0,0,0,0,no_components_detected
 18,1password-sdk-exapmles,1.0.0,/home/gerry/malware-research/samples/source/18,parsed,1,1,1,2020,0,0,1,2,1,0,0,0,1,1,0,0,0,0,0,1,1,0,1,0,0,1,0,0,0,0,1,1,0,0,1,1,0,0,0,0,0,0,0,0,no_components_detected
