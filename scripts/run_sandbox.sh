@@ -100,7 +100,10 @@ import time; time.sleep(120)
   # 6. Pindahkan log eBPF dan otomatis ekstrak fitur runtime
   echo "[4/4] Saving and extracting runtime log..."
   if [ -f "$LOG_TEMP" ]; then
-    mv "$LOG_TEMP" "$ebpf_dest"
+    # Ubah permission dan pindahkan secara paksa (-f) agar tidak prompt override
+    sudo chmod 666 "$LOG_TEMP" 2>/dev/null || true
+    sudo mv -f "$LOG_TEMP" "$ebpf_dest"
+    sudo chmod 666 "$ebpf_dest" 2>/dev/null || true
     echo "[OK] File eBPF log disimpan di: $ebpf_dest"
     python3 "$ROOT/scripts/extract_runtime_features.py" --input "$ebpf_dest" --sample-id "$sample_id"
   else
@@ -122,3 +125,4 @@ if [[ "$TARGET" =~ ^[0-9]+-[0-9]+$ ]]; then
 else
   run_single_sample "$TARGET"
 fi
+
