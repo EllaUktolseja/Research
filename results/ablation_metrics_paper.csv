@@ -1,0 +1,4 @@
+﻿variant,num_features,folds,oof_roc_auc,oof_pr_auc,oof_precision,oof_recall,oof_f1,oof_fpr,oof_mcc,cv_roc_auc_mean,cv_roc_auc_std,cv_pr_auc_mean,cv_pr_auc_std,cv_f1_mean,cv_f1_std,tp,fp,tn,fn
+Static + SBOM,24,5,0.8853,0.5513,0.3571,0.25,0.2941,0.09,0.1857,0.8837,0.1189,0.6914,0.2372,0.2743,0.26,5,9,91,15
+Runtime eBPF,8,5,0.721,0.351,0.1333,0.1,0.1143,0.13,-0.0338,0.7125,0.0696,0.4406,0.0976,0.103,0.1509,2,13,87,18
+Hybrid (Combined),32,5,0.916,0.6534,0.3571,0.25,0.2941,0.09,0.1857,0.9275,0.0687,0.7606,0.2188,0.2743,0.26,5,9,91,15
