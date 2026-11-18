@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Extract runtime behavioral features from Tetragon eBPF logs.
 
-Filters strictly for container-scoped events (via process.docker / .cid)
-and outputs bounded, orthogonal features aligned with results/features.csv.
+Filters strictly for container-scoped events, excludes harness wrapper processes
+and wrapper flags, and captures DNS lookup attempts (port 53), outbound connections,
+sensitive file opens, and anomalous child process executions.
 """
 
 from __future__ import annotations
@@ -21,6 +22,8 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_INVENTORY = ROOT_DIR / "samples" / "inventory.csv"
 DEFAULT_EBPF_DIR = ROOT_DIR / "results" / "ebpf"
 DEFAULT_OUTPUT_CSV = ROOT_DIR / "results" / "runtime_features.csv"
+
+HARNESS_MARKER = "/_harness_runner.js"
 
 SHELL_BINARIES = {"sh", "bash", "zsh", "dash", "ash", "busybox"}
 NETWORK_CLI_BINARIES = {
@@ -68,14 +71,14 @@ ALT_INTERPRETERS = {
     "powershell",
 }
 PERM_BINARIES = {"chmod", "chown"}
-STANDARD_PORTS = {53, 80, 443}
+STANDARD_NON_DNS_PORTS = {80, 443}
 
 RE_INLINE_EVAL_OR_ENCODED = re.compile(
     r"(?:^|\s)(?:-e|--eval|-c|-enc)\b|\bbase64\b|\b(?:eval|Buffer\.from|atob)\s*\(",
     re.IGNORECASE,
 )
-RE_SENSITIVE_CMDLINE = re.compile(
-    r"\.npmrc|\.ssh|\.aws|/etc/passwd|/etc/shadow|id_rsa|id_ed25519"
+RE_SENSITIVE_TARGET = re.compile(
+    r"\.npmrc|\.ssh|\.aws|/etc/passwd|/etc/shadow|id_rsa|id_ed25519|\.netrc|\.env"
     r"|oastify|interactsh|webhook\.site|pipedream|ngrok|ipify|ifconfig\.me|icanhazip"
     r"|discord(?:app)?\.com/api/webhooks|api\.telegram\.org",
     re.IGNORECASE,
@@ -95,11 +98,12 @@ RUNTIME_FEATURE_COLUMNS = [
     "rt_ran_chmod_or_tmp_exec",
     "rt_cmdline_inline_eval_or_encoded",
     "rt_cmdline_sensitive_target",
+    "rt_sensitive_file_open",
+    "rt_dns_lookup_attempt",
     "rt_outbound_external_connect",
     "rt_outbound_non_standard_port",
     "rt_multiple_external_ips",
     "rt_process_burst_high",
-    "rt_network_burst_high",
     "rt_suspicious_behavior_ratio",
 ]
 
@@ -137,29 +141,26 @@ def load_expected_cid(input_path: Path, explicit_cid: str | None) -> str | None:
     return None
 
 
-def is_target_container_process(
-    process: dict[str, Any], expected_cid: str | None
-) -> bool:
-    """Memastikan event berasal dari container sandbox, bukan proses background host VM."""
+def is_target_container_process(process: dict[str, Any], expected_cid: str | None) -> bool:
     docker_id = str(process.get("docker") or "").strip()
     if not docker_id:
         return False
     if expected_cid:
-        return expected_cid.startswith(docker_id) or docker_id.startswith(
-            expected_cid[:12]
-        )
+        return expected_cid.startswith(docker_id) or docker_id.startswith(expected_cid[:12])
     return True
 
 
-def is_external_ip(ip_str: str) -> bool:
+def normalize_ip(ip_str: str) -> str:
+    cleaned = ip_str.strip()
+    if cleaned.startswith("::ffff:"):
+        cleaned = cleaned[7:]
+    return cleaned
+
+
+def is_non_loopback_ip(ip_str: str) -> bool:
     try:
-        cleaned = ip_str.strip()
-        if cleaned.startswith("::ffff:"):
-            cleaned = cleaned[7:]
-        ip = ipaddress.ip_address(cleaned)
-        return not (
-            ip.is_loopback or ip.is_unspecified or ip.is_link_local or ip.is_multicast
-        )
+        ip = ipaddress.ip_address(normalize_ip(ip_str))
+        return not (ip.is_loopback or ip.is_unspecified or ip.is_link_local or ip.is_multicast)
     except ValueError:
         return False
 
@@ -174,8 +175,7 @@ def extract_from_logfile(
     target_cid = load_expected_cid(input_path, expected_cid)
 
     container_events = 0
-    process_exec_count = 0
-    outbound_connect_count = 0
+    package_proc_exec_count = 0
 
     spawned_shell = 0
     ran_network_cli = 0
@@ -184,9 +184,12 @@ def extract_from_logfile(
     ran_chmod_or_tmp_exec = 0
     cmdline_inline_eval = 0
     cmdline_sensitive_target = 0
+    sensitive_file_open = 0
+    dns_lookup_attempt = 0
     outbound_non_standard_port = 0
 
-    external_ips: set[str] = set()
+    external_non_dns_ips: set[str] = set()
+    seen_connect_tuples: set[tuple[int, str, int]] = set()
 
     with input_path.open("r", encoding="utf-8", errors="replace") as f:
         for raw_line in f:
@@ -202,6 +205,7 @@ def extract_from_logfile(
             if not isinstance(event, dict):
                 continue
 
+            # 1. Process Execution Events
             exec_block = event.get("process_exec")
             if isinstance(exec_block, dict):
                 proc = exec_block.get("process") or {}
@@ -209,14 +213,27 @@ def extract_from_logfile(
                     continue
 
                 container_events += 1
-                process_exec_count += 1
-
                 binary = str(proc.get("binary") or "")
                 arguments = str(proc.get("arguments") or "")
                 bin_name = Path(binary).name.lower() if binary else ""
-                full_cmd = f"{binary} {arguments}".strip()
 
-                if bin_name in SHELL_BINARIES:
+                # Abaikan proses runner harness itu sendiri
+                if HARNESS_MARKER in arguments or bin_name == "sleep":
+                    continue
+
+                parent = exec_block.get("parent") or {}
+                parent_args = str(parent.get("arguments") or "")
+                is_direct_harness_sh = (
+                    bin_name in SHELL_BINARIES and HARNESS_MARKER in parent_args
+                )
+
+                package_proc_exec_count += 1
+                if is_direct_harness_sh:
+                    inspect_cmd = re.sub(r"^\s*-c\s+", "", arguments).strip()
+                else:
+                    inspect_cmd = f"{binary} {arguments}".strip()
+
+                if bin_name in SHELL_BINARIES and not is_direct_harness_sh:
                     spawned_shell = 1
                 if bin_name in NETWORK_CLI_BINARIES:
                     ran_network_cli = 1
@@ -224,16 +241,15 @@ def extract_from_logfile(
                     ran_sys_recon_cmd = 1
                 if bin_name in ALT_INTERPRETERS:
                     ran_alt_interpreter = 1
-                if bin_name in PERM_BINARIES or binary.startswith(
-                    ("/tmp/", "/dev/shm/", "/var/tmp/")
-                ):
+                if bin_name in PERM_BINARIES or binary.startswith(("/tmp/", "/dev/shm/", "/var/tmp/")):
                     ran_chmod_or_tmp_exec = 1
 
-                if RE_INLINE_EVAL_OR_ENCODED.search(full_cmd):
+                if inspect_cmd and RE_INLINE_EVAL_OR_ENCODED.search(inspect_cmd):
                     cmdline_inline_eval = 1
-                if RE_SENSITIVE_CMDLINE.search(full_cmd):
+                if inspect_cmd and RE_SENSITIVE_TARGET.search(inspect_cmd):
                     cmdline_sensitive_target = 1
 
+            # 2. Kprobe Events (Network Connect + Sensitive File Open)
             kprobe_block = event.get("process_kprobe")
             if isinstance(kprobe_block, dict):
                 proc = kprobe_block.get("process") or {}
@@ -242,10 +258,14 @@ def extract_from_logfile(
 
                 container_events += 1
                 fn_name = str(kprobe_block.get("function_name") or "")
+                pid = int(proc.get("pid") or 0)
 
                 if fn_name in {
+                    "security_socket_connect",
                     "tcp_connect",
                     "tcp_v6_connect",
+                    "udp_sendmsg",
+                    "udpv6_sendmsg",
                     "sys_enter_connect",
                     "__sys_connect",
                 }:
@@ -255,43 +275,79 @@ def extract_from_logfile(
                         sock = arg.get("sock_arg") or {}
                         sockaddr = arg.get("sockaddr_arg") or {}
 
+                        family = str(sockaddr.get("family") or sock.get("family") or "")
+                        if family and family not in {"AF_INET", "AF_INET6", "2", "10"}:
+                            continue
+
                         ip_val = (
-                            sock.get("daddr")
+                            sockaddr.get("addr")
                             or sockaddr.get("sin_addr")
                             or sockaddr.get("sin6_addr")
+                            or sock.get("daddr")
                         )
                         port_val = (
-                            sock.get("dport")
-                            if sock.get("dport") is not None
-                            else sockaddr.get("sin_port")
+                            sockaddr.get("port")
+                            if sockaddr.get("port") is not None
+                            else (
+                                sockaddr.get("sin_port")
+                                if sockaddr.get("sin_port") is not None
+                                else sock.get("dport")
+                            )
                         )
 
-                        if ip_val and is_external_ip(str(ip_val)):
-                            outbound_connect_count += 1
-                            external_ips.add(str(ip_val))
-                            if port_val is not None:
-                                try:
-                                    port_int = int(port_val)
-                                    if port_int > 0 and port_int not in STANDARD_PORTS:
-                                        outbound_non_standard_port = 1
-                                except (TypeError, ValueError):
-                                    pass
+                        if not ip_val or port_val is None:
+                            continue
 
-    outbound_external_connect = int(outbound_connect_count > 0)
-    multiple_external_ips = int(len(external_ips) >= 2)
-    process_burst_high = int(process_exec_count >= 15)
-    network_burst_high = int(outbound_connect_count >= 10)
+                        try:
+                            port_int = int(port_val)
+                        except (TypeError, ValueError):
+                            continue
 
-    high_signal_sum = (
-        ran_network_cli
+                        if port_int <= 0:
+                            continue
+
+                        norm_ip = normalize_ip(str(ip_val))
+                        conn_key = (pid, norm_ip, port_int)
+                        if conn_key in seen_connect_tuples:
+                            continue
+                        seen_connect_tuples.add(conn_key)
+
+                        # Port 53 menangkap resolusi DNS (termasuk Docker 127.0.0.11:53 & domain NXDOMAIN)
+                        if port_int == 53:
+                            dns_lookup_attempt = 1
+                        elif is_non_loopback_ip(norm_ip):
+                            external_non_dns_ips.add(norm_ip)
+                            if port_int not in STANDARD_NON_DNS_PORTS:
+                                outbound_non_standard_port = 1
+
+                elif fn_name == "security_file_open":
+                    for arg in kprobe_block.get("args") or []:
+                        if not isinstance(arg, dict):
+                            continue
+                        file_info = arg.get("file_arg") or arg.get("path_arg") or {}
+                        opened_path = str(file_info.get("path") or "")
+                        if opened_path and RE_SENSITIVE_TARGET.search(opened_path):
+                            sensitive_file_open = 1
+
+    outbound_external_connect = int(len(external_non_dns_ips) > 0)
+    multiple_external_ips = int(len(external_non_dns_ips) >= 2)
+    process_burst_high = int(package_proc_exec_count >= 5)
+
+    # Rata-rata indikator sinyal tinggi yang bebas dari self-contamination
+    signal_components = (
+        spawned_shell
+        + ran_network_cli
         + ran_sys_recon_cmd
         + ran_alt_interpreter
         + ran_chmod_or_tmp_exec
         + cmdline_inline_eval
         + cmdline_sensitive_target
+        + sensitive_file_open
+        + dns_lookup_attempt
+        + outbound_external_connect
         + outbound_non_standard_port
     )
-    suspicious_behavior_ratio = round(high_signal_sum / 7.0, 4)
+    suspicious_behavior_ratio = round(signal_components / 11.0, 4)
 
     row: dict[str, Any] = {
         "id": str(sample_id),
@@ -304,11 +360,12 @@ def extract_from_logfile(
         "rt_ran_chmod_or_tmp_exec": ran_chmod_or_tmp_exec,
         "rt_cmdline_inline_eval_or_encoded": cmdline_inline_eval,
         "rt_cmdline_sensitive_target": cmdline_sensitive_target,
+        "rt_sensitive_file_open": sensitive_file_open,
+        "rt_dns_lookup_attempt": dns_lookup_attempt,
         "rt_outbound_external_connect": outbound_external_connect,
         "rt_outbound_non_standard_port": outbound_non_standard_port,
         "rt_multiple_external_ips": multiple_external_ips,
         "rt_process_burst_high": process_burst_high,
-        "rt_network_burst_high": network_burst_high,
         "rt_suspicious_behavior_ratio": suspicious_behavior_ratio,
     }
 
@@ -316,7 +373,6 @@ def extract_from_logfile(
 
 
 def save_or_update_csv(rows: list[dict[str, Any]], output_path: Path) -> None:
-    """Menyimpan atau memperbarui results/runtime_features.csv secara atomic."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
     rows_by_id: dict[str, dict[str, Any]] = {}
 
@@ -331,9 +387,7 @@ def save_or_update_csv(rows: list[dict[str, Any]], output_path: Path) -> None:
     for row in rows:
         rows_by_id[str(row["id"])] = row
 
-    sorted_keys = sorted(
-        rows_by_id.keys(), key=lambda k: (0, int(k)) if k.isdigit() else (1, k)
-    )
+    sorted_keys = sorted(rows_by_id.keys(), key=lambda k: (0, int(k)) if k.isdigit() else (1, k))
 
     with tempfile.NamedTemporaryFile(
         mode="w",
@@ -438,18 +492,15 @@ def main() -> None:
                 extracted.append(row)
                 print(
                     f"[OK] ID {sid:<4} [{row['reference_label']:<9}] "
-                    f"events={row['rt_has_container_events']} ratio={row['rt_suspicious_behavior_ratio']}"
+                    f"dns={row['rt_dns_lookup_attempt']} fs={row['rt_sensitive_file_open']} "
+                    f"net={row['rt_outbound_external_connect']} ratio={row['rt_suspicious_behavior_ratio']}"
                 )
             else:
-                print(
-                    f"[SKIP] File log eBPF ID {sid} tidak ditemukan di {DEFAULT_EBPF_DIR}."
-                )
+                print(f"[SKIP] File log eBPF ID {sid} tidak ditemukan di {DEFAULT_EBPF_DIR}.")
 
         if extracted:
             save_or_update_csv(extracted, output_path)
-            print(
-                f"\n[OK] Berhasil memperbarui {len(extracted)} baris di {output_path}"
-            )
+            print(f"\n[OK] Berhasil memperbarui {len(extracted)} baris di {output_path}")
         return
 
     if args.all or (args.target == "all"):
@@ -468,13 +519,12 @@ def main() -> None:
             extracted_rows.append(row)
             print(
                 f"[OK] ID {sid:<4} [{row['reference_label']:<9}] "
-                f"events={row['rt_has_container_events']} ratio={row['rt_suspicious_behavior_ratio']}"
+                f"dns={row['rt_dns_lookup_attempt']} fs={row['rt_sensitive_file_open']} "
+                f"net={row['rt_outbound_external_connect']} ratio={row['rt_suspicious_behavior_ratio']}"
             )
 
         save_or_update_csv(extracted_rows, output_path)
-        print(
-            f"\n[OK] Berhasil memperbarui {len(extracted_rows)} baris di {output_path}"
-        )
+        print(f"\n[OK] Berhasil memperbarui {len(extracted_rows)} baris di {output_path}")
         return
 
     input_path: Path | None = None

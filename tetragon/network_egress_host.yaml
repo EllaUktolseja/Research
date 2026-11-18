@@ -1,7 +1,7 @@
 apiVersion: cilium.io/v1alpha1
 kind: TracingPolicy
 metadata:
-  name: "monitor-outbound-network-calls"
+  name: "monitor-sandbox-behavior"
 spec:
   kprobes:
     - call: "tcp_connect"
@@ -9,8 +9,41 @@ spec:
       args:
         - index: 0
           type: "sock"
-    - call: "tcp_v6_connect"
+    - call: "udp_sendmsg"
       syscall: false
       args:
         - index: 0
           type: "sock"
+    - call: "udpv6_sendmsg"
+      syscall: false
+      args:
+        - index: 0
+          type: "sock"
+    - call: "security_file_open"
+      syscall: false
+      args:
+        - index: 0
+          type: "file"
+      selectors:
+        - matchArgs:
+            - index: 0
+              operator: "Postfix"
+              values:
+                - "/.npmrc"
+                - "/.ssh/id_rsa"
+                - "/.ssh/id_ed25519"
+                - "/.ssh/authorized_keys"
+                - "/.ssh/config"
+                - "/.aws/credentials"
+                - "/.aws/config"
+                - "/.gitconfig"
+                - "/.netrc"
+                - "/.bash_history"
+                - "/.zsh_history"
+                - "/.env"
+        - matchArgs:
+            - index: 0
+              operator: "Prefix"
+              values:
+                - "/etc/passwd"
+                - "/etc/shadow"

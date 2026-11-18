@@ -8,27 +8,28 @@ EBPF_DIR="$ROOT/results/ebpf"
 LOG_DIR="$ROOT/logs"
 LOG_TEMP="$LOG_DIR/tetragon-node-control.jsonl"
 POLICY_FILE="$ROOT/tetragon/network_egress_host.yaml"
+HARNESS_JS="/tmp/tetragon_harness_runner_$$.js"
 
 FORCE=0
 TARGET=""
 
 for arg in "$@"; do
   case "$arg" in
-  --force | -f)
-    FORCE=1
-    ;;
-  --help | -h)
-    echo "Usage: sudo ./scripts/run_sandbox.sh [ID | START-END] [--force]"
-    exit 0
-    ;;
-  *)
-    if [ -z "$TARGET" ]; then
-      TARGET="$arg"
-    else
-      echo "[ERROR] Argumen tidak dikenal: $arg" >&2
-      exit 1
-    fi
-    ;;
+    --force|-f)
+      FORCE=1
+      ;;
+    --help|-h)
+      echo "Usage: sudo ./scripts/run_sandbox.sh [ID | START-END] [--force]"
+      exit 0
+      ;;
+    *)
+      if [ -z "$TARGET" ]; then
+        TARGET="$arg"
+      else
+        echo "[ERROR] Argumen tidak dikenal: $arg" >&2
+        exit 1
+      fi
+      ;;
   esac
 done
 
@@ -39,12 +40,106 @@ fi
 
 mkdir -p "$EBPF_DIR" "$LOG_DIR"
 
-cleanup_tetragon() {
-  echo "[INFO] Menghentikan Tetragon sensor..."
+cat <<'EOF' > "$HARNESS_JS"
+const fs = require("fs");
+const path = require("path");
+const { pathToFileURL } = require("url");
+const { spawnSync } = require("child_process");
+
+const LIFECYCLE_KEYS = [
+  "preinstall",
+  "install",
+  "postinstall",
+  "prepare",
+  "prepublish",
+  "prepublishOnly",
+  "prepack",
+];
+
+async function tryImportOrRequire(relTarget) {
+  if (typeof relTarget !== "string" || !relTarget.trim()) return;
+  const resolved = path.resolve("/app", relTarget.trim());
+  if (!resolved.startsWith("/app")) return;
+
+  try {
+    require(resolved);
+    return;
+  } catch (err) {
+    if (err && err.code === "ERR_REQUIRE_ESM") {
+      try {
+        await import(pathToFileURL(resolved).href);
+      } catch (_) {}
+    }
+  }
+}
+
+async function main() {
+  let pkg = {};
+  try {
+    pkg = JSON.parse(fs.readFileSync("/app/package.json", "utf8"));
+  } catch (_) {}
+
+  // 1. Jalankan lifecycle scripts milik paket root
+  const scripts = pkg && typeof pkg.scripts === "object" ? pkg.scripts : {};
+  for (const key of LIFECYCLE_KEYS) {
+    const cmd = scripts[key];
+    if (typeof cmd === "string" && cmd.trim()) {
+      try {
+        spawnSync("/bin/sh", ["-c", cmd], {
+          cwd: "/app",
+          timeout: 4000,
+          stdio: "ignore",
+        });
+      } catch (_) {}
+    }
+  }
+
+  // 2. Import / require entry points paket
+  if (typeof pkg.main === "string") {
+    await tryImportOrRequire(pkg.main);
+  }
+  if (typeof pkg.module === "string") {
+    await tryImportOrRequire(pkg.module);
+  }
+  if (fs.existsSync("/app/index.js")) {
+    await tryImportOrRequire("index.js");
+  }
+
+  // 3. Jalankan bin scripts jika ada
+  if (typeof pkg.bin === "string") {
+    const binPath = path.resolve("/app", pkg.bin);
+    if (binPath.startsWith("/app") && fs.existsSync(binPath)) {
+      try {
+        spawnSync("node", [binPath], { cwd: "/app", timeout: 2500, stdio: "ignore" });
+      } catch (_) {}
+    }
+  } else if (pkg.bin && typeof pkg.bin === "object") {
+    for (const rel of Object.values(pkg.bin)) {
+      if (typeof rel === "string") {
+        const binPath = path.resolve("/app", rel);
+        if (binPath.startsWith("/app") && fs.existsSync(binPath)) {
+          try {
+            spawnSync("node", [binPath], { cwd: "/app", timeout: 2500, stdio: "ignore" });
+          } catch (_) {}
+        }
+      }
+    }
+  }
+
+  // Jeda 2 detik agar callback async (DNS/HTTP/FS) selesai tereksekusi
+  setTimeout(() => process.exit(0), 2000);
+}
+
+main().catch(() => process.exit(0));
+EOF
+
+cleanup_all() {
+  echo "[INFO] Menghentikan Tetragon sensor & membersihkan file sementara..."
   docker stop tetragon-sensor >/dev/null 2>&1 || true
   docker rm -f tetragon-sensor >/dev/null 2>&1 || true
+  rm -f "$HARNESS_JS"
 }
-trap cleanup_tetragon EXIT
+trap cleanup_all EXIT
 
 start_tetragon() {
   docker rm -f tetragon-sensor >/dev/null 2>&1 || true
@@ -102,65 +197,56 @@ run_single_sample() {
 
   local work_dir="/tmp/sandbox_pkg_${sample_id}_$$"
   local cid_file="/tmp/sandbox_cid_${sample_id}_$$"
+  local container_name="sandbox_eval_${sample_id}_$$"
   rm -rf "$work_dir" "$cid_file"
+  docker rm -f "$container_name" >/dev/null 2>&1 || true
   cp -a "$pkg_dir" "$work_dir"
-
-  local offset_before
-  offset_before=$(stat -c%s "$LOG_TEMP" 2>/dev/null || echo 0)
 
   echo "================================================================================"
   echo ">>> [SANDBOX] Sample ID: $sample_id (Source: $pkg_dir)"
   echo "================================================================================"
 
-  # Jalankan npm install (termasuk lifecycle scripts) + entry point main/bin/index.js
-  docker run --rm \
+  # Start container sandbox
+  docker run -d \
+    --name "$container_name" \
     --cidfile "$cid_file" \
     -v "$work_dir:/app" \
+    -v "$HARNESS_JS:/_harness_runner.js:ro" \
     -w /app \
     node:20-slim \
-    sh -c '
-      timeout 25s npm install --ignore-scripts=false --no-audit --no-fund >/dev/null 2>&1 || true
-      timeout 10s node -e "
-        const fs = require(\"fs\");
-        const path = require(\"path\");
-        const { spawnSync } = require(\"child_process\");
-        try {
-          const pkg = JSON.parse(fs.readFileSync(\"package.json\", \"utf8\"));
-          if (typeof pkg.main === \"string\" && pkg.main.trim()) {
-            try { require(path.resolve(pkg.main)); } catch (_) {}
-          }
-          if (typeof pkg.bin === \"string\") {
-            spawnSync(\"node\", [path.resolve(pkg.bin)], { timeout: 3000 });
-          } else if (pkg.bin && typeof pkg.bin === \"object\") {
-            for (const rel of Object.values(pkg.bin)) {
-              if (typeof rel === \"string\") {
-                spawnSync(\"node\", [path.resolve(rel)], { timeout: 3000 });
-              }
-            }
-          }
-        } catch (_) {}
-        if (fs.existsSync(\"index.js\")) {
-          try { require(path.resolve(\"index.js\")); } catch (_) {}
-        }
-      " >/dev/null 2>&1 || true
-    ' >/dev/null 2>&1 || true
+    sleep 120 >/dev/null
 
-  # Tunggu flush ring buffer eBPF ke file JSONL
-  sleep 2
+  local cid_val=""
+  if [ -f "$cid_file" ]; then
+    cid_val=$(tr -d '[:space:]' < "$cid_file")
+    printf '%s\n' "$cid_val" > "$cid_dest"
+  fi
+
+  # PHASE 1 (Untraced): Hydrate dependencies tanpa mengeksekusi lifecycle scripts
+  docker exec "$container_name" \
+    timeout 25s npm install --ignore-scripts --no-audit --no-fund >/dev/null 2>&1 || true
+  sleep 1
+
+  # Catat offset log tepat sebelum kode/lifecycle paket dieksekusi
+  local offset_before
+  offset_before=$(stat -c%s "$LOG_TEMP" 2>/dev/null || echo 0)
+
+  # PHASE 2 (Traced): Jalankan lifecycle scripts + entry point paket
+  docker exec "$container_name" \
+    timeout 15s node /_harness_runner.js >/dev/null 2>&1 || true
+
+  # Tunggu flush ring buffer eBPF ke disk
+  sleep 1
 
   local offset_after
   offset_after=$(stat -c%s "$LOG_TEMP" 2>/dev/null || echo 0)
 
-  local cid_val=""
-  if [ -f "$cid_file" ]; then
-    cid_val=$(tr -d '[:space:]' <"$cid_file")
-    printf '%s\n' "$cid_val" >"$cid_dest"
-  fi
+  docker rm -f "$container_name" >/dev/null 2>&1 || true
 
   if [ "$offset_after" -gt "$offset_before" ]; then
-    tail -c +"$((offset_before + 1))" "$LOG_TEMP" >"$ebpf_dest"
+    tail -c +"$((offset_before + 1))" "$LOG_TEMP" > "$ebpf_dest"
   else
-    : >"$ebpf_dest"
+    : > "$ebpf_dest"
   fi
 
   chmod 666 "$ebpf_dest" "$cid_dest" 2>/dev/null || true
@@ -180,12 +266,12 @@ fi
 start_tetragon
 
 if [[ "$TARGET" =~ ^[0-9]+-[0-9]+$ ]]; then
-  IFS='-' read -r start_id end_id <<<"$TARGET"
+  IFS='-' read -r start_id end_id <<< "$TARGET"
   if [ "$start_id" -lt 1 ] || [ "$end_id" -lt "$start_id" ]; then
     echo "[ERROR] Rentang ID tidak valid: $TARGET" >&2
     exit 1
   fi
-  for ((id = start_id; id <= end_id; id++)); do
+  for (( id=start_id; id<=end_id; id++ )); do
     run_single_sample "$id"
   done
 elif [[ "$TARGET" =~ ^[0-9]+$ ]]; then

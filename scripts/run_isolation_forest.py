@@ -2,8 +2,8 @@
 """Run Isolation Forest ablation study (Static vs Runtime vs Hybrid).
 
 Uses Stratified K-Fold Out-of-Fold (OOF) evaluation to prevent data leakage,
-reports ROC-AUC, PR-AUC, Precision, Recall, F1, FPR, and MCC (mean ± std),
-and exports per-sample OOF scores plus feature attribution for paper analysis.
+compares Feature-Level Concatenation and Late Score-Level Fusion,
+and reports ROC-AUC, PR-AUC, Precision, Recall, F1, FPR, and MCC (mean ± std).
 """
 
 from __future__ import annotations
@@ -31,9 +31,7 @@ DEFAULT_RESULTS_DIR = ROOT_DIR / "results"
 
 
 class BuiltinITreeNode:
-    def __init__(
-        self, left=None, right=None, split_feature=None, split_value=None, size=1
-    ):
+    def __init__(self, left=None, right=None, split_feature=None, split_value=None, size=1):
         self.left = left
         self.right = right
         self.split_feature = split_feature
@@ -118,49 +116,34 @@ class BuiltinIsolationForest:
         n = len(X)
         n_features = len(X[0]) if n > 0 else 0
         subsample_size = min(self.max_samples, n)
-        feat_sub_size = max(
-            1, min(n_features, int(round(n_features * self.max_features)))
-        )
+        feat_sub_size = max(1, min(n_features, int(round(n_features * self.max_features))))
 
         self.c_n = c_factor(subsample_size)
         max_depth = math.ceil(math.log2(max(subsample_size, 2)))
 
         self.trees = []
         for _ in range(self.n_estimators):
-            sample_subset = (
-                rng.sample(X, subsample_size) if subsample_size < n else list(X)
-            )
+            sample_subset = rng.sample(X, subsample_size) if subsample_size < n else list(X)
             feat_subset = (
                 rng.sample(range(n_features), feat_sub_size)
                 if feat_sub_size < n_features
                 else list(range(n_features))
             )
-            self.trees.append(
-                build_itree(sample_subset, 0, max_depth, rng, feat_subset)
-            )
+            self.trees.append(build_itree(sample_subset, 0, max_depth, rng, feat_subset))
 
         raw_train_scores = self.score_samples(X)
         if self.contamination is not None and 0.0 < self.contamination <= 0.5:
             sorted_s = sorted(raw_train_scores)
-            idx = max(
-                0,
-                min(
-                    len(sorted_s) - 1,
-                    int(math.floor(len(sorted_s) * self.contamination)),
-                ),
-            )
+            idx = max(0, min(len(sorted_s) - 1, int(math.floor(len(sorted_s) * self.contamination))))
             self.offset_ = sorted_s[idx]
         else:
             self.offset_ = -0.5
         return self
 
     def score_samples(self, X: list[list[float]]) -> list[float]:
-        """Higher = more normal (negative of anomaly score s(x, n)), matching scikit-learn."""
         scores = []
         for x in X:
-            avg_path = sum(compute_path_length(x, t, 0) for t in self.trees) / len(
-                self.trees
-            )
+            avg_path = sum(compute_path_length(x, t, 0) for t in self.trees) / len(self.trees)
             raw_anom = 2.0 ** (-(avg_path / self.c_n)) if self.c_n > 0 else 0.5
             scores.append(-raw_anom)
         return scores
@@ -216,11 +199,6 @@ def compute_metrics(
     preds: list[int],
     decision_scores: list[float],
 ) -> dict[str, Any]:
-    """
-    Positive Class (1) = malicious, Negative Class (0) = benign.
-    preds: -1 = outlier (malicious), 1 = inlier (benign).
-    decision_scores: lower/negative = more anomalous.
-    """
     anomaly_strength = [-s for s in decision_scores]
 
     tp = fp = tn = fn = 0
@@ -237,11 +215,7 @@ def compute_metrics(
 
     precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
     recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-    f1 = (
-        (2 * precision * recall / (precision + recall))
-        if (precision + recall) > 0
-        else 0.0
-    )
+    f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) > 0 else 0.0
     fpr = fp / (fp + tn) if (fp + tn) > 0 else 0.0
 
     mcc_denom = math.sqrt((tp + fp) * (tp + fn) * (tn + fp) * (tn + fn))
@@ -276,9 +250,7 @@ def compute_metrics(
     }
 
 
-def make_stratified_folds(
-    y_true: list[int], n_folds: int, seed: int
-) -> list[list[int]]:
+def make_stratified_folds(y_true: list[int], n_folds: int, seed: int) -> list[list[int]]:
     rng = random.Random(seed)
     pos_idx = [i for i, y in enumerate(y_true) if y == 1]
     neg_idx = [i for i, y in enumerate(y_true) if y == 0]
@@ -296,9 +268,7 @@ def make_stratified_folds(
     return folds
 
 
-def build_model(
-    contamination: float, n_estimators: int, max_features: float, seed: int
-):
+def build_model(contamination: float, n_estimators: int, max_features: float, seed: int):
     if HAS_SKLEARN:
         return SklearnIsolationForest(
             n_estimators=n_estimators,
@@ -317,6 +287,35 @@ def build_model(
     )
 
 
+def summarize_folds(
+    y_true: list[int],
+    oof_scores: list[float],
+    oof_preds: list[int],
+    fold_metrics: list[dict[str, Any]],
+    effective_folds: int,
+) -> dict[str, Any]:
+    oof_overall = compute_metrics(y_true, oof_preds, oof_scores)
+    summary_stats: dict[str, Any] = {}
+    for metric_key in ("roc_auc", "pr_auc", "precision", "recall", "f1", "fpr", "mcc"):
+        vals = [m[metric_key] for m in fold_metrics if m[metric_key] is not None]
+        if vals:
+            mean_v = statistics.mean(vals)
+            std_v = statistics.stdev(vals) if len(vals) > 1 else 0.0
+            summary_stats[f"{metric_key}_mean"] = round(mean_v, 4)
+            summary_stats[f"{metric_key}_std"] = round(std_v, 4)
+        else:
+            summary_stats[f"{metric_key}_mean"] = None
+            summary_stats[f"{metric_key}_std"] = None
+
+    return {
+        "effective_folds": effective_folds,
+        "oof_overall": oof_overall,
+        "cv_summary": summary_stats,
+        "oof_scores": oof_scores,
+        "oof_preds": oof_preds,
+    }
+
+
 def evaluate_variant_oof(
     X: list[list[float]],
     y_true: list[int],
@@ -331,7 +330,6 @@ def evaluate_variant_oof(
     pos_total = sum(y_true)
     neg_total = n - pos_total
     min_class = min(pos_total, neg_total)
-
     effective_folds = min(n_folds, min_class) if min_class >= 2 else 1
 
     oof_scores = [0.0] * n
@@ -368,7 +366,6 @@ def evaluate_variant_oof(
 
             fold_metrics.append(compute_metrics(y_test, preds_test, scores_test))
     else:
-        # Fallback jika sampel terlalu sedikit untuk stratified CV (< 2 per kelas)
         if train_benign_only and neg_total > 0:
             X_train = [X[i] for i in range(n) if y_true[i] == 0]
             contam = min(0.49, max(0.01, benign_fpr_target))
@@ -383,27 +380,96 @@ def evaluate_variant_oof(
         oof_preds = [int(p) for p in model.predict(X)]
         fold_metrics.append(compute_metrics(y_true, oof_preds, oof_scores))
 
-    oof_overall = compute_metrics(y_true, oof_preds, oof_scores)
+    return summarize_folds(y_true, oof_scores, oof_preds, fold_metrics, effective_folds)
 
-    summary_stats: dict[str, Any] = {}
-    for metric_key in ("roc_auc", "pr_auc", "precision", "recall", "f1", "fpr", "mcc"):
-        vals = [m[metric_key] for m in fold_metrics if m[metric_key] is not None]
-        if vals:
-            mean_v = statistics.mean(vals)
-            std_v = statistics.stdev(vals) if len(vals) > 1 else 0.0
-            summary_stats[f"{metric_key}_mean"] = round(mean_v, 4)
-            summary_stats[f"{metric_key}_std"] = round(std_v, 4)
+
+def evaluate_score_fusion_oof(
+    X_static: list[list[float]],
+    X_runtime: list[list[float]],
+    y_true: list[int],
+    n_folds: int,
+    n_estimators: int,
+    max_features: float,
+    seed: int,
+    train_benign_only: bool = False,
+    benign_fpr_target: float = 0.05,
+    static_weight: float = 0.7,
+) -> dict[str, Any]:
+    """Late score-level fusion of independent Static IF and Runtime IF models (leak-free)."""
+    n = len(y_true)
+    pos_total = sum(y_true)
+    neg_total = n - pos_total
+    min_class = min(pos_total, neg_total)
+    effective_folds = min(n_folds, min_class) if min_class >= 2 else 1
+    runtime_weight = 1.0 - static_weight
+
+    oof_scores = [0.0] * n
+    oof_preds = [1] * n
+    fold_metrics: list[dict[str, Any]] = []
+
+    folds = (
+        make_stratified_folds(y_true, effective_folds, seed)
+        if effective_folds >= 2
+        else [list(range(n))]
+    )
+
+    for fold_id, test_idx in enumerate(folds):
+        test_set = set(test_idx)
+        train_idx = [i for i in range(n) if i not in test_set] if effective_folds >= 2 else list(range(n))
+
+        if train_benign_only:
+            fit_idx = [i for i in train_idx if y_true[i] == 0]
+            contam = min(0.49, max(0.01, benign_fpr_target))
         else:
-            summary_stats[f"{metric_key}_mean"] = None
-            summary_stats[f"{metric_key}_std"] = None
+            fit_idx = train_idx
+            y_train = [y_true[i] for i in train_idx]
+            contam = min(0.49, max(0.01, sum(y_train) / max(1, len(y_train))))
 
-    return {
-        "effective_folds": effective_folds,
-        "oof_overall": oof_overall,
-        "cv_summary": summary_stats,
-        "oof_scores": oof_scores,
-        "oof_preds": oof_preds,
-    }
+        Xs_fit = [X_static[i] for i in fit_idx]
+        Xr_fit = [X_runtime[i] for i in fit_idx]
+        Xs_test = [X_static[i] for i in test_idx]
+        Xr_test = [X_runtime[i] for i in test_idx]
+        y_test = [y_true[i] for i in test_idx]
+
+        model_s = build_model(contam, n_estimators, max_features, seed + fold_id)
+        model_r = build_model(contam, n_estimators, max_features, seed + 1000 + fold_id)
+        model_s.fit(Xs_fit)
+        model_r.fit(Xr_fit)
+
+        s_fit_scores = [float(s) for s in model_s.decision_function(Xs_fit)]
+        r_fit_scores = [float(s) for s in model_r.decision_function(Xr_fit)]
+        s_test_scores = [float(s) for s in model_s.decision_function(Xs_test)]
+        r_test_scores = [float(s) for s in model_r.decision_function(Xr_test)]
+
+        s_mean = statistics.mean(s_fit_scores)
+        s_std = statistics.stdev(s_fit_scores) if len(s_fit_scores) > 1 else 1.0
+        s_std = s_std if s_std > 1e-9 else 1.0
+
+        r_mean = statistics.mean(r_fit_scores)
+        r_std = statistics.stdev(r_fit_scores) if len(r_fit_scores) > 1 else 1.0
+        r_std = r_std if r_std > 1e-9 else 1.0
+
+        fit_fused = [
+            static_weight * ((s - s_mean) / s_std) + runtime_weight * ((r - r_mean) / r_std)
+            for s, r in zip(s_fit_scores, r_fit_scores)
+        ]
+        sorted_fit = sorted(fit_fused)
+        q_idx = max(0, min(len(sorted_fit) - 1, int(math.floor(len(sorted_fit) * contam))))
+        threshold = sorted_fit[q_idx]
+
+        test_fused_centered = [
+            (static_weight * ((s - s_mean) / s_std) + runtime_weight * ((r - r_mean) / r_std)) - threshold
+            for s, r in zip(s_test_scores, r_test_scores)
+        ]
+        preds_test = [-1 if d < 0.0 else 1 for d in test_fused_centered]
+
+        for idx_pos, orig_i in enumerate(test_idx):
+            oof_scores[orig_i] = test_fused_centered[idx_pos]
+            oof_preds[orig_i] = preds_test[idx_pos]
+
+        fold_metrics.append(compute_metrics(y_test, preds_test, test_fused_centered))
+
+    return summarize_folds(y_true, oof_scores, oof_preds, fold_metrics, effective_folds)
 
 
 def compute_feature_attribution(
@@ -416,7 +482,6 @@ def compute_feature_attribution(
     train_benign_only: bool = False,
     benign_fpr_target: float = 0.05,
 ) -> list[dict[str, Any]]:
-    """Mengukur kontribusi tiap fitur terhadap pergeseran anomaly score pada sampel malware."""
     n = len(X)
     pos_idx = [i for i, y in enumerate(y_true) if y == 1]
     neg_idx = [i for i, y in enumerate(y_true) if y == 0]
@@ -438,13 +503,11 @@ def compute_feature_attribution(
 
     attribution_rows: list[dict[str, Any]] = []
     for f_idx, fname in enumerate(feature_names):
-        # Set fitur ke 0 untuk mengukur seberapa besar fitur ini mendorong skor anomali (negatif)
         X_ablated = [list(row) for row in X_target]
         for row in X_ablated:
             row[f_idx] = 0.0
         ablated_scores = [float(s) for s in model.decision_function(X_ablated)]
 
-        # Positif berarti menyalanya fitur ini membuat sampel lebih terdeteksi sebagai anomali
         mean_shift = statistics.mean(a - b for a, b in zip(ablated_scores, base_scores))
 
         mal_rate = (
@@ -457,9 +520,7 @@ def compute_feature_attribution(
             if neg_idx
             else 0.0
         )
-        modality = (
-            "runtime_ebpf" if fname.startswith(("rt_", "runtime_")) else "static_sbom"
-        )
+        modality = "runtime_ebpf" if fname.startswith(("rt_", "runtime_")) else "static_sbom"
 
         attribution_rows.append(
             {
@@ -479,18 +540,14 @@ def compute_feature_attribution(
 def load_dataset(features_file: Path) -> tuple[list[list[float]], list[str]]:
     with features_file.open("r", encoding="utf-8-sig", newline="") as f:
         reader = csv.DictReader(f)
-        feature_columns = [
-            c.strip() for c in (reader.fieldnames or []) if c is not None
-        ]
+        feature_columns = [c.strip() for c in (reader.fieldnames or []) if c is not None]
         X: list[list[float]] = []
         for row in reader:
             X.append([float(row.get(c, 0.0) or 0.0) for c in feature_columns])
     return X, feature_columns
 
 
-def atomic_write_csv(
-    output_path: Path, fieldnames: list[str], rows: list[dict[str, Any]]
-) -> None:
+def atomic_write_csv(output_path: Path, fieldnames: list[str], rows: list[dict[str, Any]]) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(
         mode="w",
@@ -571,6 +628,12 @@ def main() -> None:
         help="Target FPR pada data benign jika memakai --train-benign-only (default: 0.05)",
     )
     parser.add_argument(
+        "--static-weight",
+        type=float,
+        default=0.7,
+        help="Bobot skor Static IF pada Hybrid Score Fusion (default: 0.7)",
+    )
+    parser.add_argument(
         "--seed",
         type=int,
         default=42,
@@ -603,16 +666,12 @@ def main() -> None:
         print("[ERROR] Minimal diperlukan 4 sampel untuk menjalankan evaluasi.")
         return
 
-    ground_truth_labels = [
-        m.get("reference_label", "").strip().lower() for m in metadata_rows
-    ]
+    ground_truth_labels = [m.get("reference_label", "").strip().lower() for m in metadata_rows]
     y_true = [1 if lbl == "malicious" else 0 for lbl in ground_truth_labels]
     mal_count = sum(y_true)
     benign_count = num_samples - mal_count
 
-    engine_name = (
-        "scikit-learn" if HAS_SKLEARN else "Built-in pure-Python IsolationForest"
-    )
+    engine_name = "scikit-learn" if HAS_SKLEARN else "Built-in pure-Python IsolationForest"
     fit_regime = (
         f"Semi-supervised (benign-only, target FPR={args.benign_fpr})"
         if args.train_benign_only
@@ -620,15 +679,10 @@ def main() -> None:
     )
 
     print(f"[INFO] Engine              : {engine_name}")
-    print(
-        f"[INFO] Total Sampel        : {num_samples} (Malicious: {mal_count}, Benign: {benign_count})"
-    )
+    print(f"[INFO] Total Sampel        : {num_samples} (Malicious: {mal_count}, Benign: {benign_count})")
     print(f"[INFO] Regime Training     : {fit_regime}")
-    print(
-        f"[INFO] Hyperparameters     : n_estimators={args.n_estimators}, max_features={args.max_features}, folds={args.folds}, seed={args.seed}"
-    )
+    print(f"[INFO] Hyperparameters     : n_estimators={args.n_estimators}, max_features={args.max_features}, folds={args.folds}, seed={args.seed}")
 
-    # Single-file mode jika --features diberikan secara eksplisit
     if args.features is not None:
         features_path = args.features.expanduser().resolve()
         if not features_path.is_file():
@@ -664,17 +718,15 @@ def main() -> None:
     if runtime_file.is_file():
         variants.append(("Runtime eBPF", runtime_file))
     if combined_file.is_file():
-        variants.append(("Hybrid (Combined)", combined_file))
+        variants.append(("Hybrid (Concat)", combined_file))
 
     if not variants:
-        print(
-            f"[ERROR] Tidak ada dataset model (features_model_*.csv) di {results_dir}"
-        )
+        print(f"[ERROR] Tidak ada dataset model (features_model_*.csv) di {results_dir}")
         return
 
-    print("\n" + "=" * 112)
+    print("\n" + "=" * 114)
     print(" EXPERIMENTAL ABLATION STUDY: OUT-OF-FOLD ISOLATION FOREST EVALUATION ")
-    print("=" * 112)
+    print("=" * 114)
 
     variant_results: dict[str, dict[str, Any]] = {}
     metrics_csv_rows: list[dict[str, Any]] = []
@@ -682,9 +734,7 @@ def main() -> None:
     for label_name, fpath in variants:
         X, cols = load_dataset(fpath)
         if not cols or len(X) != num_samples:
-            print(
-                f"[WARNING] Melewati {label_name}: jumlah baris/kolom tidak cocok dengan metadata."
-            )
+            print(f"[WARNING] Melewati {label_name}: jumlah baris/kolom tidak cocok dengan metadata.")
             continue
 
         res = evaluate_variant_oof(
@@ -702,12 +752,31 @@ def main() -> None:
         res["X"] = X
         variant_results[label_name] = res
 
+    if "Static + SBOM" in variant_results and "Runtime eBPF" in variant_results:
+        s_res = variant_results["Static + SBOM"]
+        r_res = variant_results["Runtime eBPF"]
+        fusion_res = evaluate_score_fusion_oof(
+            s_res["X"],
+            r_res["X"],
+            y_true,
+            n_folds=args.folds,
+            n_estimators=args.n_estimators,
+            max_features=args.max_features,
+            seed=args.seed,
+            train_benign_only=args.train_benign_only,
+            benign_fpr_target=args.benign_fpr,
+            static_weight=args.static_weight,
+        )
+        fusion_res["feature_count"] = s_res["feature_count"] + r_res["feature_count"]
+        variant_results["Hybrid (Score Fusion)"] = fusion_res
+
+    for label_name, res in variant_results.items():
         ov = res["oof_overall"]
         cv = res["cv_summary"]
         metrics_csv_rows.append(
             {
                 "variant": label_name,
-                "num_features": len(cols),
+                "num_features": res["feature_count"],
                 "folds": res["effective_folds"],
                 "oof_roc_auc": ov["roc_auc"],
                 "oof_pr_auc": ov["pr_auc"],
@@ -730,61 +799,50 @@ def main() -> None:
         )
 
     print(
-        f"{'MODEL VARIANT':<20} | {'FEAT':<4} | {'OOF ROC-AUC':<11} | {'OOF PR-AUC':<10} | "
+        f"{'MODEL VARIANT':<22} | {'FEAT':<4} | {'OOF ROC-AUC':<11} | {'OOF PR-AUC':<10} | "
         f"{'PREC':<7} | {'REC':<7} | {'F1':<7} | {'FPR':<7} | {'MCC':<7}"
     )
-    print("-" * 112)
+    print("-" * 114)
     for row in metrics_csv_rows:
         print(
-            f"{row['variant']:<20} | {row['num_features']:<4} | "
+            f"{row['variant']:<22} | {row['num_features']:<4} | "
             f"{str(row['oof_roc_auc']):<11} | {str(row['oof_pr_auc']):<10} | "
             f"{row['oof_precision']:<7.4f} | {row['oof_recall']:<7.4f} | "
             f"{row['oof_f1']:<7.4f} | {row['oof_fpr']:<7.4f} | {row['oof_mcc']:<7.4f}"
         )
-    print("-" * 112)
+    print("-" * 114)
 
     print("\n--- Cross-Validation Stability (Mean ± Std across folds) ---")
     for label_name, res in variant_results.items():
         cv = res["cv_summary"]
         print(
-            f"{label_name:<20} | ROC-AUC: {format_mean_std(cv, 'roc_auc'):<13} | "
+            f"{label_name:<22} | ROC-AUC: {format_mean_std(cv, 'roc_auc'):<13} | "
             f"PR-AUC: {format_mean_std(cv, 'pr_auc'):<13} | F1: {format_mean_std(cv, 'f1'):<13}"
         )
 
     metrics_output = results_dir / "ablation_metrics_paper.csv"
     if metrics_csv_rows:
-        atomic_write_csv(
-            metrics_output, list(metrics_csv_rows[0].keys()), metrics_csv_rows
-        )
+        atomic_write_csv(metrics_output, list(metrics_csv_rows[0].keys()), metrics_csv_rows)
         print(f"\n[OK] Metrik evaluasi paper disimpan di     : {metrics_output}")
 
-    # Susun tabel perbandingan per sampel (Out-of-Fold scores)
     static_res = variant_results.get("Static + SBOM")
     runtime_res = variant_results.get("Runtime eBPF")
-    hybrid_res = variant_results.get("Hybrid (Combined)") or static_res
+    hybrid_res = (
+        variant_results.get("Hybrid (Score Fusion)")
+        or variant_results.get("Hybrid (Concat)")
+        or static_res
+    )
 
     comparison_results: list[dict[str, Any]] = []
     for i, meta in enumerate(metadata_rows):
         s_score = round(static_res["oof_scores"][i], 6) if static_res else 0.0
-        s_label = (
-            ("outlier" if static_res["oof_preds"][i] == -1 else "inlier")
-            if static_res
-            else "n/a"
-        )
+        s_label = ("outlier" if static_res["oof_preds"][i] == -1 else "inlier") if static_res else "n/a"
 
         r_score = round(runtime_res["oof_scores"][i], 6) if runtime_res else 0.0
-        r_label = (
-            ("outlier" if runtime_res["oof_preds"][i] == -1 else "inlier")
-            if runtime_res
-            else "n/a"
-        )
+        r_label = ("outlier" if runtime_res["oof_preds"][i] == -1 else "inlier") if runtime_res else "n/a"
 
         h_score = round(hybrid_res["oof_scores"][i], 6) if hybrid_res else 0.0
-        h_label = (
-            ("outlier" if hybrid_res["oof_preds"][i] == -1 else "inlier")
-            if hybrid_res
-            else "n/a"
-        )
+        h_label = ("outlier" if hybrid_res["oof_preds"][i] == -1 else "inlier") if hybrid_res else "n/a"
 
         comparison_results.append(
             {
@@ -817,11 +875,11 @@ def main() -> None:
     atomic_write_csv(comp_output, comp_fields, comparison_results)
     print(f"[OK] Hasil perbandingan OOF disimpan di    : {comp_output}")
 
-    # Hitung feature attribution pada model utama (Hybrid jika ada)
-    if hybrid_res is not None:
+    concat_res = variant_results.get("Hybrid (Concat)")
+    if concat_res is not None:
         attr_rows = compute_feature_attribution(
-            hybrid_res["X"],
-            hybrid_res["feature_names"],
+            concat_res["X"],
+            concat_res["feature_names"],
             y_true,
             n_estimators=args.n_estimators,
             max_features=args.max_features,
@@ -843,9 +901,7 @@ def main() -> None:
                 )
 
     shown = comparison_results[: max(1, args.top_k)]
-    print(
-        f"\n--- Top {len(shown)} Sampel Paling Anomali (Out-of-Fold Hybrid Score) ---"
-    )
+    print(f"\n--- Top {len(shown)} Sampel Paling Anomali (Out-of-Fold Hybrid Score) ---")
     print("-" * 102)
     print(
         f"{'ID':<5} {'PACKAGE NAME':<28} | {'LABEL':<10} | "
