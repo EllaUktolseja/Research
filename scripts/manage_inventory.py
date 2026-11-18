@@ -221,7 +221,6 @@ def ingest_benign(rows, count):
 
         pkg_spec = f"{pkg_name}@{version}" if version else pkg_name
 
-        # Hindari duplikat baik berdasarkan spec persis maupun nama dasar paket
         if pkg_spec in existing_specs or pkg_name in existing_base_names:
             continue
 
@@ -287,46 +286,73 @@ def safe_extract_tar(tgz_path, dest_dir):
             tar.extractall(path=dest_dir)
 
 
-def normalize_to_package_dir(extracted_dir, package_dir):
+def normalize_to_package_dir(extracted_dir, package_dir, archive_dir=None):
     """
-    Menyeragamkan hasil ekstraksi (baik malware maupun benign) agar selalu
-    menghasilkan folder '<id>/package/' berisi root source code paket npm.
+    Menyeragamkan hasil ekstraksi (baik struktur berlapis Datadog maupun npm pack)
+    agar '<id>/package/' selalu berisi root paket tempat package.json berada.
     """
     ignore_names = {"__MACOSX", ".DS_Store"}
-    entries = [p for p in extracted_dir.iterdir() if p.name not in ignore_names]
 
-    if not entries:
-        return False
-
-    # Kasus 1: Zip Datadog membungkus file .tgz / .tar.gz di dalamnya
-    tarballs = [
+    # 1. Ekstrak semua nested tarball (.tgz / .tar.gz) jika zip membungkus tarball
+    nested_tarballs = [
         p
-        for p in entries
-        if p.is_file() and (p.name.endswith(".tgz") or p.name.endswith(".tar.gz"))
+        for p in extracted_dir.rglob("*")
+        if p.is_file()
+        and (p.name.endswith(".tgz") or p.name.endswith(".tar.gz"))
+        and "__MACOSX" not in p.parts
     ]
-    if len(entries) == 1 and len(tarballs) == 1:
-        nested_dir = extracted_dir / "_nested_tar"
-        safe_extract_tar(tarballs[0], nested_dir)
-        entries = [p for p in nested_dir.iterdir() if p.name not in ignore_names]
-        source_root = nested_dir
-    else:
-        source_root = extracted_dir
+    for idx, tgz_file in enumerate(nested_tarballs):
+        nested_dest = extracted_dir / f"_nested_tar_{idx}"
+        safe_extract_tar(tgz_file, nested_dest)
 
+    # 2. Simpan metadata Datadog (package_info-*.json) ke archive/ jika ada
+    if archive_dir is not None:
+        for info_file in extracted_dir.rglob("package_info-*.json"):
+            if info_file.is_file():
+                shutil.copy2(str(info_file), str(archive_dir / info_file.name))
+
+    # 3. Cari package.json terdangkal (prioritaskan folder bernama 'package')
+    manifest_candidates = [
+        p
+        for p in extracted_dir.rglob("package.json")
+        if p.is_file()
+        and "node_modules" not in p.parts
+        and ".git" not in p.parts
+        and "__MACOSX" not in p.parts
+    ]
+    if manifest_candidates:
+        manifest_candidates.sort(
+            key=lambda p: (
+                len(p.relative_to(extracted_dir).parts),
+                0 if p.parent.name == "package" else 1,
+                str(p),
+            )
+        )
+        chosen_root = manifest_candidates[0].parent
+        shutil.move(str(chosen_root), str(package_dir))
+        return any(package_dir.iterdir())
+
+    # 4. Fallback jika paket malware benar-benar tidak punya package.json
+    current_dir = extracted_dir
+    while True:
+        entries = [
+            p
+            for p in current_dir.iterdir()
+            if p.name not in ignore_names and not p.name.startswith("package_info-")
+        ]
+        if len(entries) == 1 and entries[0].is_dir():
+            current_dir = entries[0]
+        else:
+            break
+
+    entries = [
+        p
+        for p in current_dir.iterdir()
+        if p.name not in ignore_names and not p.name.startswith("package_info-")
+    ]
     if not entries:
         return False
 
-    # Kasus 2: Struktur standar npm tarball ('package/...')
-    pkg_subdir = source_root / "package"
-    if pkg_subdir.is_dir():
-        shutil.move(str(pkg_subdir), str(package_dir))
-        return True
-
-    # Kasus 3: Terbungkus dalam satu folder tunggal (misal 'nama-paket-1.0.0/')
-    if len(entries) == 1 and entries[0].is_dir():
-        shutil.move(str(entries[0]), str(package_dir))
-        return True
-
-    # Kasus 4: File (package.json, index.js, dll.) langsung berada di root arsip
     package_dir.mkdir(parents=True, exist_ok=True)
     for item in entries:
         shutil.move(str(item), str(package_dir / item.name))
@@ -391,7 +417,9 @@ def download_malware(row, folder):
             check=True,
         )
 
-        if not normalize_to_package_dir(unzip_dir, package_dir):
+        if not normalize_to_package_dir(
+            unzip_dir, package_dir, archive_dir=archive_dir
+        ):
             print("[ERROR] Hasil ekstraksi arsip malware kosong atau tidak valid.")
             return False
 
@@ -450,7 +478,6 @@ def download_benign(row, folder):
         except json.JSONDecodeError:
             pass
 
-        # Fallback jika npm tidak mengeluarkan JSON murni
         if tgz_path is None:
             tgz_files = list(staging_dir.glob("*.tgz"))
             if tgz_files:
@@ -505,7 +532,6 @@ def inspect_sample(rows, sample_id, force=False):
         print(f"[ERROR] ID {sample_id} memiliki reference_label tidak valid: {label!r}")
         return False
 
-    # Bersihkan sisa folder lama jika sebelumnya gagal/in-progress
     if folder.exists():
         shutil.rmtree(folder, ignore_errors=True)
     folder.mkdir(parents=True, exist_ok=True)
@@ -529,7 +555,6 @@ def inspect_sample(rows, sample_id, force=False):
         print("[OK] Inventory berhasil diperbarui.")
         return True
     else:
-        # Hapus folder agar tidak meninggalkan direktori kosong/korup
         shutil.rmtree(folder, ignore_errors=True)
         print(
             "[WARNING] Download/ekstrak gagal; folder dibersihkan & status tidak diubah."
