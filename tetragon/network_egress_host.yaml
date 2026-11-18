@@ -9,12 +9,8 @@ spec:
       args:
         - index: 0
           type: "sock"
-      selectors:
-        - matchArgs:
-            - index: 0
-              operator: "DPort"
-              values:
-                - 80
-                - 443
-                - 8080
-                - 3000
+    - call: "tcp_v6_connect"
+      syscall: false
+      args:
+        - index: 0
+          type: "sock"

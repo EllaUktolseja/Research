@@ -1,46 +1,65 @@
 #!/usr/bin/env bash
-set -e
+# Simpan sebagai: scripts/run_sandbox.sh
+set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-LOG_TEMP="$ROOT/logs/tetragon-node-control.jsonl"
+SAMPLES_DIR="$ROOT/samples/source"
+EBPF_DIR="$ROOT/results/ebpf"
+LOG_DIR="$ROOT/logs"
+LOG_TEMP="$LOG_DIR/tetragon-node-control.jsonl"
+POLICY_FILE="$ROOT/tetragon/network_egress_host.yaml"
 
-mkdir -p "$ROOT/results/ebpf" "$ROOT/logs"
+FORCE=0
+TARGET=""
 
-run_single_sample() {
-  local sample_id="$1"
-  local ebpf_dest="$ROOT/results/ebpf/${sample_id}.json"
-  local sample_dir="$ROOT/samples/source/$sample_id"
+for arg in "$@"; do
+  case "$arg" in
+  --force | -f)
+    FORCE=1
+    ;;
+  --help | -h)
+    echo "Usage: sudo ./scripts/run_sandbox.sh [ID | START-END] [--force]"
+    exit 0
+    ;;
+  *)
+    if [ -z "$TARGET" ]; then
+      TARGET="$arg"
+    else
+      echo "[ERROR] Argumen tidak dikenal: $arg" >&2
+      exit 1
+    fi
+    ;;
+  esac
+done
 
-  if [ ! -d "$sample_dir" ]; then
-    echo "[SKIP] Folder sampel ID $sample_id tidak ditemukan ($sample_dir)."
-    return
-  fi
+if [ ! -f "$POLICY_FILE" ]; then
+  echo "[ERROR] TracingPolicy tidak ditemukan: $POLICY_FILE" >&2
+  exit 1
+fi
 
-  local target_dir
-  target_dir=$(find "$sample_dir" -name "package.json" -not -path '*/node_modules/*' -not -path '*/.git/*' -exec dirname {} \; | head -n 1)
-  if [ -z "$target_dir" ]; then
-    echo "[WARNING] Tidak ditemukan package.json di $sample_dir, menggunakan root sampel."
-    target_dir="$sample_dir"
+mkdir -p "$EBPF_DIR" "$LOG_DIR"
+
+cleanup_tetragon() {
+  echo "[INFO] Menghentikan Tetragon sensor..."
+  docker stop tetragon-sensor >/dev/null 2>&1 || true
+  docker rm -f tetragon-sensor >/dev/null 2>&1 || true
+}
+trap cleanup_tetragon EXIT
+
+start_tetragon() {
+  docker rm -f tetragon-sensor >/dev/null 2>&1 || true
+  if [ -d "/sys/fs/bpf/tetragon" ]; then
+    rm -rf /sys/fs/bpf/tetragon/* 2>/dev/null || true
   fi
 
   rm -f "$LOG_TEMP"
+  touch "$LOG_TEMP"
 
-  echo "================================================================================"
-  echo ">>> [START SANDBOX] Sample ID: $sample_id (Directory: $target_dir)"
-  echo "================================================================================"
-
-  # 1. Bersihkan sisa container dan pin BPF lama
-  sudo docker rm -f tetragon-sensor mock-sinkhole 2>/dev/null || true
-  if [ -d "/sys/fs/bpf/tetragon" ]; then
-    sudo rm -rf /sys/fs/bpf/tetragon/* 2>/dev/null || true
-  fi
-
-  # 2. Jalankan Tetragon Sensor
-  echo "[1/4] Starting Tetragon Sensor..."
-  sudo docker run --name tetragon-sensor -d \
+  echo "[INFO] Menjalankan Tetragon sensor untuk batch..."
+  docker run --name tetragon-sensor -d \
     --privileged --pid=host --net=host \
-    -v "$ROOT/tetragon/network_egress_host.yaml:/etc/tetragon/tetragon.tp.d/network_egress_host.yaml" \
-    -v "$ROOT/logs:/var/log/tetragon" \
+    -v "$POLICY_FILE:/etc/tetragon/tetragon.tp.d/network_egress_host.yaml:ro" \
+    -v "$LOG_DIR:/var/log/tetragon" \
     -v /sys/kernel/debug:/sys/kernel/debug \
     -v /sys/fs/bpf:/sys/fs/bpf \
     -v /etc/os-release:/etc/os-release:ro \
@@ -48,81 +67,130 @@ run_single_sample() {
     tetragon \
     --export-filename /var/log/tetragon/tetragon-node-control.jsonl \
     --tracing-policy-dir /etc/tetragon/tetragon.tp.d/ \
-    --disable-kprobe-multi
+    --disable-kprobe-multi >/dev/null
 
-  # Berikan jeda waktu agar sensor ter-attach ke kernel
-  sleep 15
+  sleep 6
 
-  if ! sudo docker ps | grep -q tetragon-sensor; then
-    echo "[ERROR] Tetragon sensor crash saat startup untuk ID $sample_id! Menampilkan log error:"
-    sudo docker logs tetragon-sensor || true
-    sudo docker rm -f tetragon-sensor 2>/dev/null || true
-    return
+  if ! docker ps --format '{{.Names}}' | grep -qx 'tetragon-sensor'; then
+    echo "[ERROR] Tetragon sensor gagal berjalan. Log:" >&2
+    docker logs tetragon-sensor || true
+    exit 1
   fi
-
-  # 3. Jalankan Mock Sinkhole Server (Port 80 & 8080)
-  echo "[2/4] Executing Mock Sinkhole & Sample inside sandbox..."
-  sudo docker run --name mock-sinkhole -d --net=host \
-    python:3-slim python3 -c '
-import http.server, socketserver, threading
-class Handler(http.server.SimpleHTTPRequestHandler):
-    def do_GET(self): self.send_response(200); self.end_headers(); self.wfile.write(b"{}")
-    def do_POST(self): self.send_response(200); self.end_headers(); self.wfile.write(b"{}")
-def run_port(p):
-    try:
-        with socketserver.TCPServer(("", p), Handler) as httpd:
-            httpd.serve_forever()
-    except Exception:
-        pass
-threading.Thread(target=run_port, args=(8080,), daemon=True).start()
-threading.Thread(target=run_port, args=(80,), daemon=True).start()
-import time; time.sleep(120)
-' 2>/dev/null || true
-
-  # 4. Eksekusi Node.js sampel di isolated container
-  sudo docker run --rm --net=host \
-    -v "$target_dir:/app" \
-    -w /app \
-    node:20-slim \
-    sh -c "npm install --ignore-scripts=false && (if [ -f index.js ]; then timeout 10s node index.js || true; else timeout 5s node -e 'try { require(\"./\") } catch(e) {}' || true; fi)" || true
-
-  # Bersihkan mock sinkhole
-  sudo docker rm -f mock-sinkhole 2>/dev/null || true
-
-  # Jeda flush log eBPF ke disk
-  sleep 10
-
-  # 5. Stop Tetragon Sensor
-  echo "[3/4] Stopping Tetragon Sensor..."
-  sudo docker stop tetragon-sensor 2>/dev/null || true
-  sudo docker rm -f tetragon-sensor 2>/dev/null || true
-
-  # 6. Pindahkan log eBPF dan otomatis ekstrak fitur runtime
-  echo "[4/4] Saving and extracting runtime log..."
-  if [ -f "$LOG_TEMP" ]; then
-    # Ubah permission dan pindahkan secara paksa (-f) agar tidak prompt override
-    sudo chmod 666 "$LOG_TEMP" 2>/dev/null || true
-    sudo mv -f "$LOG_TEMP" "$ebpf_dest"
-    sudo chmod 666 "$ebpf_dest" 2>/dev/null || true
-    echo "[OK] File eBPF log disimpan di: $ebpf_dest"
-    python3 "$ROOT/scripts/extract_runtime_features.py" --input "$ebpf_dest" --sample-id "$sample_id"
-  else
-    echo "[ERROR] File log temporary tidak ditemukan di $LOG_TEMP!"
-  fi
-  echo
+  echo "[OK] Tetragon sensor aktif."
 }
 
-TARGET="${1:-1}"
+run_single_sample() {
+  local sample_id="$1"
+  local ebpf_dest="$EBPF_DIR/${sample_id}.json"
+  local cid_dest="$EBPF_DIR/${sample_id}.cid"
+  local sample_dir="$SAMPLES_DIR/$sample_id"
+  local pkg_dir="$sample_dir/package"
 
-if [[ "$TARGET" =~ ^[0-9]+-[0-9]+$ ]]; then
-  IFS='-' read -r start_id end_id <<< "$TARGET"
+  if [ ! -d "$sample_dir" ]; then
+    echo "[SKIP] Folder sampel ID $sample_id tidak ditemukan."
+    return 0
+  fi
+
+  if [ ! -d "$pkg_dir" ]; then
+    pkg_dir="$sample_dir"
+  fi
+
+  if [ -s "$ebpf_dest" ] && [ "$FORCE" -eq 0 ]; then
+    echo "[SKIP] Log eBPF ID $sample_id sudah ada ($ebpf_dest). Gunakan --force untuk ulang."
+    return 0
+  fi
+
+  local work_dir="/tmp/sandbox_pkg_${sample_id}_$$"
+  local cid_file="/tmp/sandbox_cid_${sample_id}_$$"
+  rm -rf "$work_dir" "$cid_file"
+  cp -a "$pkg_dir" "$work_dir"
+
+  local offset_before
+  offset_before=$(stat -c%s "$LOG_TEMP" 2>/dev/null || echo 0)
+
   echo "================================================================================"
-  echo ">>> [BATCH EXECUTION] Menjalankan sandbox untuk rentang ID: $start_id sampai $end_id"
+  echo ">>> [SANDBOX] Sample ID: $sample_id (Source: $pkg_dir)"
   echo "================================================================================"
-  for (( id=start_id; id<=end_id; id++ )); do
-    run_single_sample "$id"
-  done
-else
-  run_single_sample "$TARGET"
+
+  # Jalankan npm install (termasuk lifecycle scripts) + entry point main/bin/index.js
+  docker run --rm \
+    --cidfile "$cid_file" \
+    -v "$work_dir:/app" \
+    -w /app \
+    node:20-slim \
+    sh -c '
+      timeout 25s npm install --ignore-scripts=false --no-audit --no-fund >/dev/null 2>&1 || true
+      timeout 10s node -e "
+        const fs = require(\"fs\");
+        const path = require(\"path\");
+        const { spawnSync } = require(\"child_process\");
+        try {
+          const pkg = JSON.parse(fs.readFileSync(\"package.json\", \"utf8\"));
+          if (typeof pkg.main === \"string\" && pkg.main.trim()) {
+            try { require(path.resolve(pkg.main)); } catch (_) {}
+          }
+          if (typeof pkg.bin === \"string\") {
+            spawnSync(\"node\", [path.resolve(pkg.bin)], { timeout: 3000 });
+          } else if (pkg.bin && typeof pkg.bin === \"object\") {
+            for (const rel of Object.values(pkg.bin)) {
+              if (typeof rel === \"string\") {
+                spawnSync(\"node\", [path.resolve(rel)], { timeout: 3000 });
+              }
+            }
+          }
+        } catch (_) {}
+        if (fs.existsSync(\"index.js\")) {
+          try { require(path.resolve(\"index.js\")); } catch (_) {}
+        }
+      " >/dev/null 2>&1 || true
+    ' >/dev/null 2>&1 || true
+
+  # Tunggu flush ring buffer eBPF ke file JSONL
+  sleep 2
+
+  local offset_after
+  offset_after=$(stat -c%s "$LOG_TEMP" 2>/dev/null || echo 0)
+
+  local cid_val=""
+  if [ -f "$cid_file" ]; then
+    cid_val=$(tr -d '[:space:]' <"$cid_file")
+    printf '%s\n' "$cid_val" >"$cid_dest"
+  fi
+
+  if [ "$offset_after" -gt "$offset_before" ]; then
+    tail -c +"$((offset_before + 1))" "$LOG_TEMP" >"$ebpf_dest"
+  else
+    : >"$ebpf_dest"
+  fi
+
+  chmod 666 "$ebpf_dest" "$cid_dest" 2>/dev/null || true
+  rm -rf "$work_dir" "$cid_file"
+
+  echo "[OK] Saved eBPF log: $ebpf_dest (bytes: $((offset_after - offset_before)), cid: ${cid_val:0:12})"
+  python3 "$ROOT/scripts/extract_runtime_features.py" \
+    --input "$ebpf_dest" \
+    --sample-id "$sample_id" || echo "[WARNING] Ekstraksi fitur runtime gagal untuk ID $sample_id"
+}
+
+if [ -z "$TARGET" ]; then
+  echo "Usage: sudo ./scripts/run_sandbox.sh [ID | START-END] [--force]" >&2
+  exit 1
 fi
 
+start_tetragon
+
+if [[ "$TARGET" =~ ^[0-9]+-[0-9]+$ ]]; then
+  IFS='-' read -r start_id end_id <<<"$TARGET"
+  if [ "$start_id" -lt 1 ] || [ "$end_id" -lt "$start_id" ]; then
+    echo "[ERROR] Rentang ID tidak valid: $TARGET" >&2
+    exit 1
+  fi
+  for ((id = start_id; id <= end_id; id++)); do
+    run_single_sample "$id"
+  done
+elif [[ "$TARGET" =~ ^[0-9]+$ ]]; then
+  run_single_sample "$TARGET"
+else
+  echo "[ERROR] Format target tidak valid: $TARGET" >&2
+  exit 1
+fi
