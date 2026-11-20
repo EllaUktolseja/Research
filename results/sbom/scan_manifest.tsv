@@ -1138,6 +1138,7 @@ sample_id	pkg_name	pkg_version	manifest_valid	declared_deps	syft_components	stat
 1137	@opentelemetry/instrumentation-openai	0.17.0	true	9	0	warning-empty-components
 1138	detective-sass	7.0.1	true	5	0	warning-empty-components
 1139	@vercel/blob	2.4.1	true	16	0	warning-empty-components
+1140	@next/swc-darwin-arm64	16.2.9	true	0	0	ok
 1141	locate-character	3.0.0	true	2	0	warning-empty-components
 1142	object.defaults	1.1.0	true	6	0	warning-empty-components
 1143	mv	2.1.1	true	4	0	warning-empty-components
